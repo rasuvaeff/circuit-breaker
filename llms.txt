@@ -1,0 +1,177 @@
+# circuit-breaker
+
+Circuit breaker resilience primitive for PHP. `Closed → Open → HalfOpen`
+state, switched by sliding-window success/failure counts, via a shared
+in-memory, APCu, or Redis `Storage`.
+
+Install:
+
+```
+composer require rasuvaeff/circuit-breaker
+```
+
+Runtime deps: `rasuvaeff/duration`, `psr/clock`. For `RedisStorage`
+(multi-host) also install ONE Redis client — `predis/predis` ^2.2 (pure-PHP,
+`PredisScriptRunner`) or `ext-redis` (`PhpRedisScriptRunner`); both optional
+(`suggest`). `ext-apcu` for `ApcuStorage` (single-host) — also optional.
+Namespace `Rasuvaeff\CircuitBreaker`.
+
+## Rules
+
+- PHP 8.3+, `declare(strict_types=1)`, immutable `final readonly` classes.
+- `isFailure` is required in `BreakerConfig`; classify only exceptions that
+  indicate a downstream failure (network errors, 5xx status).
+- `classifyResult` is optional and defaults to `Outcome::Success`. Use it for
+  normal API responses that represent downstream failure; the original result
+  is still returned and fallback is not invoked.
+- `CircuitObserver` receives committed `CircuitTransition` events after storage
+  commit; configure its paired error handler to isolate telemetry failures.
+- `Ratio::of(failures, window, within)`: a ring buffer capped at `window`
+  entries, pruned to the last `within` duration. Opens when the failure count
+  within that buffer reaches `failures`.
+- In `Open`, `call()` never invokes the callback — it throws
+  `CircuitOpenException` (or calls `fallback` with it) instantly.
+- `fallback` is invoked on `Rejected` (with a fresh `CircuitOpenException`) OR
+  when the callback threw and `isFailure()` classified it as `Failure`. An
+  `Ignored` outcome (`isFailure() === false`) is ALWAYS rethrown as-is, never
+  triggers `fallback`, never counts against the threshold.
+- `probeLimit` (default 1) bounds concurrent probes admitted in `HalfOpen`;
+  `successThreshold` consecutive probe successes close the circuit again; any
+  probe failure reopens immediately and restarts the cooldown clock.
+- `probeTimeout` (default `cooldown`) leases HalfOpen probe slots and reclaims
+  abandoned slots after the timeout. `CircuitBreaker::call()` passes an opaque
+  attempt ID so a reclaimed probe cannot affect a newer Redis generation.
+- Outcomes are timestamped when the callback completes. Storage exceptions
+  become `StorageFailure` infrastructure errors; they are never classified by
+  `isFailure` and never trigger `fallback`. Inspect `operation` and
+  `getPrevious()` for logging/degradation.
+- `name` must match `/^[A-Za-z0-9_.:-]+$/` (it becomes part of the Redis/APCu key).
+- `InMemoryStorage` is single-process only (tests/CLI) — not cross-process.
+- `ApcuStorage` only coordinates workers on the same host — use `RedisStorage`
+  across hosts. Lock-budget exhaustion throws; through `CircuitBreaker` it is
+  exposed as `StorageFailure`, never as a silently lost transition. Its lock is
+  a LEASE (`lockTtlSeconds`, default 1s), not a mutex: a critical section that
+  outlives the lease fails the commit instead of overwriting another worker's
+  write. A failed `apcu_store()` (segment full) throws for the same reason.
+- `RedisStorage` runs `admit()`/`recordOutcome()`/`snapshot()`/`forceState()`
+  each as ONE atomic Lua script (EVALSHA with EVAL fallback on NOSCRIPT) — this
+  is what makes the read-evaluate-transition sequence race-free across
+  processes. Implement `CircuitScriptRunner` to back it with another client.
+- `snapshot()`/`state()`/`metrics()` never mutate — they don't apply the lazy
+  `Open → HalfOpen` cooldown transition or prune the window. Only `call()`
+  (via `admit()`/`recordOutcome()`) does.
+- `RedisStorage` uses Redis server time by default for cooldown and probe leases.
+  `useServerTime: false` is a deterministic caller-clock mode for tests; APCu
+  always uses the injected clock, so distributed APCu users need NTP.
+- Redis probe fencing is strict in both time modes: an opaque attempt ID is
+  stored in the active probe set and removed or invalidated atomically.
+- This package does not retry or limit concurrency — compose with
+  `rasuvaeff/retry` and `rasuvaeff/bulkhead`.
+
+`Storage::admit()` returns `AdmissionResult`; `recordOutcome()` returns
+`OutcomeResult`. Both expose optional transition metadata: a committed
+`CircuitTransition` carries a `TransitionReason`
+(`failure-threshold-reached`, `cooldown-elapsed`, `probe-succeeded`,
+`probe-failed`, `forced-open`, `forced-closed`, `forced-half-open`).
+`StorageOperation` enumerates storage operation names used in infrastructure
+error routing.
+
+## API
+
+```php
+use Psr\Http\Client\ClientExceptionInterface;
+use Rasuvaeff\CircuitBreaker\BreakerConfig;
+use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
+use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\Duration\Duration;
+
+$cb = new CircuitBreaker(
+    config: new BreakerConfig(
+        name: 'stripe',
+        failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+        cooldown: Duration::seconds(30),
+        successThreshold: 3,
+        probeLimit: 1,
+        isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
+    ),
+    storage: new InMemoryStorage(), // or ApcuStorage / RedisStorage
+    clock: new SystemClock(),
+);
+
+$result = $cb->call(
+    callback: static fn(): mixed => callDownstream(),
+    fallback: static fn(\Throwable $e): mixed => degradedResult(),
+);
+
+$cb->canCall();   // bool, best-effort, side-effect-free
+$cb->state();     // CircuitState::Closed|Open|HalfOpen
+$cb->metrics();   // Metrics: state(), successes(), failures(), rejected(), openedAt()
+$cb->forceOpen();
+$cb->forceClosed();
+```
+
+With Redis (multi-host):
+
+```php
+use Predis\Client;
+use Rasuvaeff\CircuitBreaker\Redis\PredisScriptRunner;
+use Rasuvaeff\CircuitBreaker\RedisStorage;
+
+$storage = new RedisStorage(new PredisScriptRunner(new Client(['host' => '127.0.0.1'])));
+```
+
+With `ext-redis` instead of predis:
+
+```php
+use Rasuvaeff\CircuitBreaker\Redis\PhpRedisScriptRunner;
+
+$redis = new \Redis();
+$redis->connect('127.0.0.1');
+$storage = new RedisStorage(new PhpRedisScriptRunner($redis));
+```
+
+Single-host, no Redis:
+
+```php
+use Rasuvaeff\CircuitBreaker\ApcuStorage;
+
+$storage = new ApcuStorage(); // ApcuStorage::isAvailable() to check ext-apcu
+```
+
+### Storage (implement for a custom backend)
+
+```php
+interface Storage
+{
+    public function admit(string $key, BreakerConfig $config, \DateTimeImmutable $now, string $attemptId): AdmissionResult;
+    public function recordOutcome(string $key, Outcome $outcome, BreakerConfig $config, \DateTimeImmutable $now, Admission $admission, \DateTimeImmutable $admittedAt, string $attemptId): OutcomeResult;
+    public function snapshot(string $key): StateRecord;      // read-only, no side effects
+    public function forceState(string $key, CircuitState $state, \DateTimeImmutable $now): ?CircuitTransition;
+}
+```
+
+`admit()`/`recordOutcome()` MUST be one atomic operation each — read state,
+evaluate thresholds, transition — not a sequence of smaller primitives (that
+reopens a check-then-act race between processes).
+
+The fencing triple (`$admission`, `$admittedAt`, `$attemptId`) is REQUIRED, not
+optional: pass back exactly what `admit()` was called with, one
+`recordOutcome()` per admission. Fabricating it defeats probe fencing — Redis
+matches `$attemptId` against the live probe set, the PHP-side backends compare
+`$admittedAt` against the current probe generation.
+
+An outcome whose admission is not `Admission::Probe` never moves a `HalfOpen`
+breaker: it was admitted while the breaker was still `Closed`, so it belongs to
+no probe generation.
+
+### Composition (rasuvaeff/retry, rasuvaeff/bulkhead — not dependencies)
+
+```php
+// retry inside one call, breaker blocks after a systemic outage
+$cb->call(fn () => $retry->run(fn () => callDownstream()));
+
+// bulkhead limits parallelism, breaker blocks cascading failure
+$bulkhead->call(fn () => $cb->call(fn () => callDownstream()));
+```

@@ -1,0 +1,98 @@
+{
+    "name": "rasuvaeff/circuit-breaker",
+    "description": "Circuit breaker resilience primitive for PHP with pluggable in-memory, APCu, and Redis storage backends",
+    "license": "BSD-3-Clause",
+    "type": "library",
+    "keywords": [
+        "apcu",
+        "circuit-breaker",
+        "redis",
+        "resilience"
+    ],
+    "authors": [
+        {
+            "name": "Victor Razuvaev",
+            "email": "rasuvaeff@gmail.com"
+        }
+    ],
+    "homepage": "https://github.com/rasuvaeff/circuit-breaker",
+    "support": {
+        "issues": "https://github.com/rasuvaeff/circuit-breaker/issues",
+        "source": "https://github.com/rasuvaeff/circuit-breaker"
+    },
+    "require": {
+        "php": "8.3 - 8.5",
+        "psr/clock": "^1.0",
+        "rasuvaeff/duration": "^1.0"
+    },
+    "require-dev": {
+        "ergebnis/composer-normalize": "^2.51",
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "infection/infection": "^0.33",
+        "maglnet/composer-require-checker": "^4.17",
+        "predis/predis": "^2.2 || ^3.0",
+        "rasuvaeff/property-testing": "^2.6",
+        "rector/rector": "^2.4",
+        "roave/backward-compatibility-check": "^8.0",
+        "testo/bridge-infection": "^0.1.6",
+        "testo/testo": "^0.10.25",
+        "vimeo/psalm": "^6.16"
+    },
+    "suggest": {
+        "ext-apcu": "Required to use ApcuStorage for single-host distributed state",
+        "ext-redis": "Required to use RedisStorage via PhpRedisScriptRunner",
+        "predis/predis": "Required to use RedisStorage via PredisScriptRunner (^2.2, pure-PHP alternative to ext-redis)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rasuvaeff\\CircuitBreaker\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rasuvaeff\\CircuitBreaker\\Benchmarks\\": "benchmarks/",
+            "Rasuvaeff\\CircuitBreaker\\Tests\\": "tests/"
+        },
+        "files": [
+            "tests/Support/apcu_store_shim.php"
+        ]
+    },
+    "config": {
+        "allow-plugins": {
+            "ergebnis/composer-normalize": true,
+            "infection/extension-installer": true
+        },
+        "platform": {
+            "ext-bcmath": "1.0.0",
+            "ext-intl": "1.0.0"
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "bc-check": "roave-backward-compatibility-check",
+        "bench": "testo --suite=Benchmarks -vv",
+        "build": [
+            "@composer validate --strict",
+            "@composer normalize --dry-run",
+            "@require-checker",
+            "@cs",
+            "@psalm",
+            "@test"
+        ],
+        "cs": "php-cs-fixer fix --dry-run --diff --config=.php-cs-fixer.php",
+        "cs:fix": "php-cs-fixer fix --diff --config=.php-cs-fixer.php",
+        "mutation": "infection --threads=max",
+        "psalm": "psalm --no-cache",
+        "rector": "rector process --dry-run",
+        "rector:fix": "rector process",
+        "release-check": [
+            "@build",
+            "@rector",
+            "@bc-check"
+        ],
+        "require-checker": "composer-require-checker check composer.json",
+        "test": "testo --suite=Unit",
+        "test:coverage": "testo --suite=Unit --coverage --coverage-clover=build/coverage.xml",
+        "test:coverage:ci": "testo --suite=Unit --coverage-clover=build/coverage.xml"
+    }
+}
