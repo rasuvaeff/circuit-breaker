@@ -146,6 +146,13 @@ jobs:
           docker exec cb-redis-7000 redis-cli --cluster create \
             127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
             --cluster-replicas 0 --cluster-yes
+          for _ in $(seq 1 60); do
+            STATE="$(docker exec cb-redis-7000 redis-cli -p 7000 cluster info \
+              | tr -d '\r' | sed -n 's/^cluster_state:\(.*\)$/\1/p')"
+            [ "$STATE" = 'ok' ] && break
+            sleep 1
+          done
+          [ "$STATE" = 'ok' ] || { echo "cluster not ready: $STATE"; exit 1; }
           echo 'REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002' >> "$GITHUB_ENV"
 
       - name: Integration tests

@@ -397,7 +397,7 @@ final class CircuitBreakerTest
     public function closedSnapshotAfterConcurrentRecoveryRetriesImmediately(): void
     {
         $cb = $this->breaker();
-        $retryAfter = new \ReflectionMethod(CircuitBreaker::class, 'retryAfter')->invoke(
+        $retryAfter = (new \ReflectionMethod(CircuitBreaker::class, 'retryAfter'))->invoke(
             $cb,
             new StateRecord(CircuitState::Closed, $this->clock->now(), 0, 0, 0),
         );
