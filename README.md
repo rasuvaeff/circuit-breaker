@@ -21,6 +21,7 @@ same atomic `admit()`/`recordOutcome()` contract, so switching backends never
 changes behavior, only how far the shared state reaches.
 
 > Using an AI coding assistant? [llms.txt](llms.txt) contains a compact API reference you can share with the model.
+> Projects using the [llm/skills](https://github.com/roxblnfk/skills) Composer plugin also get this package's agent skill synced into `.agents/skills/` automatically on install.
 
 ## Requirements
 
