@@ -114,6 +114,19 @@ final class BreakerConfigTest
         );
     }
 
+    public function rejectsNameWithTrailingNewline(): void
+    {
+        Expect::exception(\InvalidArgumentException::class)->withMessageContaining('Invalid breaker name');
+
+        new BreakerConfig(
+            name: "api-breaker\n",
+            failureThreshold: Ratio::of(failures: 1, window: 1, within: Duration::seconds(1)),
+            cooldown: Duration::seconds(1),
+            successThreshold: 1,
+            isFailure: static fn(\Throwable $e): bool => true,
+        );
+    }
+
     public function rejectsNameWithDisallowedCharacters(): void
     {
         Expect::exception(\InvalidArgumentException::class)->withMessageContaining('Invalid breaker name');
