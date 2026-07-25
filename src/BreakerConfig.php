@@ -15,7 +15,7 @@ use Rasuvaeff\Duration\Duration;
  */
 final readonly class BreakerConfig
 {
-    private const string NAME_PATTERN = '/^[A-Za-z0-9_.:-]+$/';
+    private const string NAME_PATTERN = '/^[A-Za-z0-9_.:-]+\z/';
 
     /** @var non-empty-string */
     private string $name;
