@@ -5,12 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 1.1.1 — 2026-07-25
+## 1.1.2 — 2026-07-25
 
 - Reject trailing newlines in breaker-name validation: anchor
   `BreakerConfig::NAME_PATTERN` with `\z` instead of `$` (PCRE `$` matches
   before a trailing `\n`, which let `"<name>\n"` pass and become the storage
   namespace/key).
+
+## 1.1.1 — 2026-07-25
+
+- Accidental empty release (tag pointed at a pre-fix commit). Superseded by
+  1.1.2, which carries the actual fix.
 
 ## 1.1.0 — 2026-07-25
 
