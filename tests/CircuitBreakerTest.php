@@ -20,6 +20,7 @@ use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\CircuitBreaker\StateRecord;
 use Rasuvaeff\CircuitBreaker\Storage;
 use Rasuvaeff\CircuitBreaker\StorageFailure;
+use Rasuvaeff\CircuitBreaker\StorageOperation;
 use Rasuvaeff\CircuitBreaker\Tests\Support\RecordingObserver;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
 use Rasuvaeff\Duration\Duration;
@@ -28,12 +29,17 @@ use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
 #[Test]
 #[Covers(CircuitBreaker::class)]
+// StorageOperation is the enum CircuitBreaker::storageOperation() labels every
+// wrapped Storage failure with (see AGENTS.md golden rule 3, StorageFailure);
+// this test class is the only place that failure-wrapping path runs.
+#[Covers(StorageOperation::class)]
 final class CircuitBreakerTest
 {
     use StorageCalls;
@@ -248,6 +254,108 @@ final class CircuitBreakerTest
 
         Assert::same(preg_match('/^[a-f0-9]{32}:2$/', (string) $storage->admitAttemptIds[1]), 1);
         Assert::same($storage->recordAttemptIds[1], $storage->admitAttemptIds[1]);
+    }
+
+    #[DataProvider('storageFailureCarriesTheOperationThatFailedProvider')]
+    public function storageFailureCarriesTheOperationThatFailed(
+        StorageOperation $throwingOperation,
+        \Closure $trigger,
+    ): void {
+        $storage = new class ($throwingOperation) implements Storage {
+            public function __construct(private readonly StorageOperation $throwingOperation) {}
+
+            #[\Override]
+            public function admit(
+                string $key,
+                BreakerConfig $config,
+                \DateTimeImmutable $now,
+                string $attemptId,
+            ): AdmissionResult {
+                if ($this->throwingOperation === StorageOperation::Admit) {
+                    throw new \RuntimeException('storage unavailable');
+                }
+
+                return new AdmissionResult(Admission::Allowed);
+            }
+
+            #[\Override]
+            public function recordOutcome(
+                string $key,
+                Outcome $outcome,
+                BreakerConfig $config,
+                \DateTimeImmutable $now,
+                Admission $admission,
+                \DateTimeImmutable $admittedAt,
+                string $attemptId,
+            ): OutcomeResult {
+                if ($this->throwingOperation === StorageOperation::RecordOutcome) {
+                    throw new \RuntimeException('storage unavailable');
+                }
+
+                return new OutcomeResult(new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0));
+            }
+
+            #[\Override]
+            public function snapshot(string $key): StateRecord
+            {
+                if ($this->throwingOperation === StorageOperation::Snapshot) {
+                    throw new \RuntimeException('storage unavailable');
+                }
+
+                return new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
+            }
+
+            #[\Override]
+            public function forceState(
+                string $key,
+                CircuitState $state,
+                \DateTimeImmutable $now,
+            ): ?CircuitTransition {
+                if ($this->throwingOperation === StorageOperation::ForceState) {
+                    throw new \RuntimeException('storage unavailable');
+                }
+
+                return null;
+            }
+        };
+        $cb = new CircuitBreaker(
+            config: new BreakerConfig(
+                name: 'svc',
+                failureThreshold: Ratio::of(1, 1, Duration::seconds(60)),
+                cooldown: Duration::seconds(30),
+                successThreshold: 1,
+                isFailure: static fn(\Throwable $e): bool => true,
+            ),
+            storage: $storage,
+            clock: $this->clock,
+        );
+        $caught = null;
+
+        try {
+            $trigger($cb);
+        } catch (\Throwable $e) {
+            $caught = $e;
+        }
+
+        Assert::instanceOf($caught, StorageFailure::class);
+        Assert::same($caught->operation, $throwingOperation->value);
+    }
+
+    /** @return iterable<string, array{StorageOperation, \Closure(CircuitBreaker): mixed}> */
+    public static function storageFailureCarriesTheOperationThatFailedProvider(): iterable
+    {
+        yield 'admit' => [
+            StorageOperation::Admit,
+            static fn(CircuitBreaker $cb): string => $cb->call(static fn(): string => 'ok'),
+        ];
+        yield 'snapshot' => [
+            StorageOperation::Snapshot,
+            static fn(CircuitBreaker $cb): CircuitState => $cb->state(),
+        ];
+        yield 'forceState' => [
+            StorageOperation::ForceState,
+            static fn(CircuitBreaker $cb): mixed => $cb->forceOpen(),
+        ];
     }
 
     public function failureIsTimestampedWhenCallbackCompletes(): void

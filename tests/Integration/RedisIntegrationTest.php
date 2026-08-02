@@ -10,6 +10,7 @@ use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\CircuitBreaker\Redis\LuaScripts;
 use Rasuvaeff\CircuitBreaker\Redis\PredisScriptRunner;
 use Rasuvaeff\CircuitBreaker\RedisStorage;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
@@ -22,6 +23,10 @@ use Testo\Test;
 #[Test]
 #[Covers(RedisStorage::class)]
 #[Covers(PredisScriptRunner::class)]
+// LuaScripts' bodies only run as real Lua inside Redis (a PHP function
+// cannot execute inside a Redis script, see AGENTS.md golden rule 3) - this
+// is the only place that happens with predis.
+#[Covers(LuaScripts::class)]
 final class RedisIntegrationTest
 {
     use StorageCalls;

@@ -9,6 +9,7 @@ use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\CircuitBreaker\Redis\LuaScripts;
 use Rasuvaeff\CircuitBreaker\Redis\PhpRedisScriptRunner;
 use Rasuvaeff\CircuitBreaker\RedisStorage;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
@@ -21,6 +22,8 @@ use Testo\Test;
 #[Test]
 #[Covers(RedisStorage::class)]
 #[Covers(PhpRedisScriptRunner::class)]
+// See RedisIntegrationTest for why LuaScripts needs a real Redis path.
+#[Covers(LuaScripts::class)]
 final class PhpRedisIntegrationTest
 {
     use StorageCalls;

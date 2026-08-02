@@ -28,8 +28,57 @@
     //    parent report, so infection never selects that test for these mutants
     //    (the same phenomenon rasuvaeff/bulkhead documents for
     //    ApcuBulkheadStore::lock).
+    //
+    // Internal\BreakerState (the transition logic shared by InMemoryStorage
+    // and ApcuStorage, see AGENTS.md golden rule 3) carries #[Covers] on
+    // InMemoryStorageTest as of the ER-003 mutation-coverage audit (2026-08-02).
+    // Seven of its mutants are equivalent - `entry['probeSuccesses']`/
+    // `entry['probeSlots']` are only ever READ while `state === HalfOpen`, and
+    // the only way INTO HalfOpen is either `admit()`'s `Open -> HalfOpen`
+    // transition (which unconditionally resets both fields to 0, discarding
+    // whatever they held) or `forceState()` (which always starts from a fresh
+    // `BreakerState::fresh()` entry, never from a prior entry's leftover
+    // fields) - so a `0 -> -1` mutant on a write that happens while LEAVING
+    // HalfOpen is dead by construction, never a write exposed via `fresh()`
+    // itself (that one IS observable through forceState() and is covered by
+    // forceStateToHalfOpenStartsWithNoOccupiedProbeSlotsOrSuccesses):
+    //  - BreakerState.php:252 `probeSuccesses = 0` (HalfOpen -> Closed, probe
+    //    succeeded) and :253 `probeSlots = 0` in the same branch;
+    //  - BreakerState.php:260 `probeSuccesses = 0` (HalfOpen -> Open, probe
+    //    failed) and :261 `probeSlots = 0` in the same branch.
+    // BreakerState.php:84 `$entry['probeSlots'] > 0` -> `>= 0` (probe-lease
+    // expiry check): at `probeSlots === 0` both the `>` and `>=` variants take
+    // branches that produce the IDENTICAL result (`probeSlots = 0`,
+    // `probeGenerationAt = $now`) - `probeSlots` is never legitimately
+    // negative, so the two conditions only ever diverge on unreachable state.
+    // (BreakerState.php:243's `max(0, $entry['probeSlots'] - 1)` floor looked
+    // equivalent under the "exactly once recordOutcome()" contract, but is
+    // NOT - a caller that releases the same probe twice (a real, if
+    // contract-violating, bug) drives it negative without the clamp; killed
+    // by doubleReleasingAProbeSlotNeverLeavesItNegative.)
+    // BreakerState.php:213 `count($entry['ring']) > $ratio->window()` -> `>=`:
+    // trimming an array that already has exactly `window()` elements to its
+    // last `window()` elements is a no-op (`array_slice($ring, -N)` on an
+    // N-element list returns the same N elements) - the two conditions only
+    // diverge on a boundary where the "extra" trim changes nothing.
+    // BreakerState.php:218 removing `array_values()` around the `within`
+    // eviction `array_filter()`: nothing downstream of `$entry['ring']`
+    // (BreakerState.php, InMemoryStorage.php, ApcuStorage.php) ever indexes it
+    // by a specific integer key - every consumer is `count()`/`array_filter()`/
+    // `array_slice()` (all key-order-agnostic) or a subsequent `[] =` append
+    // (key-gap-tolerant) - so a non-reindexed (gappy) array is behaviorally
+    // identical to a reindexed one for every reachable caller.
+    //
+    // minMsi dropped 97 -> 96 in the ER-003 audit (2026-08-02): closing the
+    // #[Covers] attribution gap grew the mutant denominator from 333 to 442
+    // (109 new mutants, 105 of them in BreakerState, the package's most
+    // branch-dense file - see docs/evolved-rules.md ER-003). The honest
+    // ceiling after killing everything killable is ~96.8-97.1% depending on
+    // which side of the pre-existing ApcuStorage.php:235 escape/timeout flake
+    // (documented above) a given run lands on - 96 leaves margin for that
+    // flake without hiding a real gap.
     "testFramework": "testo",
-    "minMsi": 97,
+    "minMsi": 96,
     "mutators": {
         "@default": true
     }
