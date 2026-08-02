@@ -9,6 +9,7 @@ use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\CircuitTransition;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Internal\BreakerState;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
@@ -25,6 +26,19 @@ use Testo\Test;
 
 #[Test]
 #[Covers(InMemoryStorage::class)]
+// InMemoryStorage delegates every transition to the pure functions in
+// Internal\BreakerState (see AGENTS.md golden rule 3) - this test class is
+// the sole exerciser of that shared logic in the Unit suite (ApcuStorage
+// reuses the same functions but only through the Redis/APCu-gated
+// Integration suite). Admission/CircuitState/Outcome are the enums
+// BreakerState's transitions are expressed in terms of, and every case of
+// each is asserted somewhere in this file - see ER-003 in docs/evolved-rules.md
+// for why testo/infection require explicit #[Covers] naming even when a
+// class is already exercised.
+#[Covers(BreakerState::class)]
+#[Covers(Admission::class)]
+#[Covers(CircuitState::class)]
+#[Covers(Outcome::class)]
 final class InMemoryStorageTest
 {
     use StorageCalls;
@@ -115,6 +129,36 @@ final class InMemoryStorageTest
         Assert::same($record->failures(), 1);
     }
 
+    /**
+     * `within` bounds the window by "any call older than `within` has already
+     * aged out" (see AGENTS.md) - an entry timestamped exactly at the cutoff
+     * has NOT aged out yet, it ages out the instant it crosses the boundary.
+     */
+    public function ringEntryExactlyAtTheWithinCutoffIsStillCounted(): void
+    {
+        $config = $this->config(failures: 2, window: 10, within: Duration::seconds(5));
+
+        $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $this->base)->state();
+        $boundary = $this->base->modify('+5 seconds');
+        $record = $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $boundary)->state();
+
+        Assert::same($record->state(), CircuitState::Open);
+        Assert::same($record->failures(), 2);
+    }
+
+    public function recordOutcomeReportsTransitionWhenFailureThresholdOpensTheCircuit(): void
+    {
+        $config = $this->config(failures: 1, window: 1);
+
+        $result = $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $this->base);
+
+        $transition = $result->transition();
+        Assert::instanceOf($transition, CircuitTransition::class);
+        Assert::same($transition->from(), CircuitState::Closed);
+        Assert::same($transition->to(), CircuitState::Open);
+        Assert::same($transition->reason(), TransitionReason::FailureThresholdReached);
+    }
+
     public function admitRejectsInOpenBeforeCooldown(): void
     {
         $config = $this->config(failures: 1, window: 1, cooldown: Duration::seconds(30));
@@ -150,6 +194,49 @@ final class InMemoryStorageTest
         Assert::same($first, Admission::Probe);
         Assert::same($second, Admission::Probe);
         Assert::same($third, Admission::Rejected);
+        Assert::same($this->storage->snapshot('svc')->rejected(), 1);
+    }
+
+    /**
+     * Releasing one occupied probe slot must free exactly one slot, no more
+     * and no less - two probes admitted, one released, must allow exactly one
+     * fresh probe before rejecting again.
+     */
+    public function releasingOneProbeSlotAllowsExactlyOneFreshProbe(): void
+    {
+        $config = $this->config(failures: 1, window: 1, cooldown: Duration::seconds(30), probeLimit: 2);
+        $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $this->base)->state();
+        $probeTime = $this->base->modify('+31 seconds');
+
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Probe);
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Probe);
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Rejected);
+
+        $this->recordOn($this->storage, 'svc', Outcome::Ignored, $config, $probeTime, Admission::Probe)->state();
+
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Probe);
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Rejected);
+    }
+
+    /**
+     * `recordOutcome()` MUST be called exactly once per admitted probe
+     * (AGENTS.md golden rule 3) - but the slot-release arithmetic clamps at 0
+     * defensively. A caller bug that releases the same probe twice must not
+     * underflow `probeSlots` and leak an extra unit of admission capacity.
+     */
+    public function doubleReleasingAProbeSlotNeverLeavesItNegative(): void
+    {
+        $config = $this->config(failures: 1, window: 1, cooldown: Duration::seconds(30), probeLimit: 1);
+        $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $this->base)->state();
+        $probeTime = $this->base->modify('+31 seconds');
+
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Probe);
+
+        $this->recordOn($this->storage, 'svc', Outcome::Ignored, $config, $probeTime, Admission::Probe, $probeTime);
+        $this->recordOn($this->storage, 'svc', Outcome::Ignored, $config, $probeTime, Admission::Probe, $probeTime);
+
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Probe);
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $probeTime)->admission(), Admission::Rejected);
     }
 
     public function abandonedProbeSlotIsReclaimedAfterTimeout(): void
@@ -171,6 +258,13 @@ final class InMemoryStorageTest
         Assert::same(
             $this->admitOn($this->storage, 'svc', $config, $probeTime->modify('+5 seconds'))->admission(),
             Admission::Probe,
+        );
+        // The reclaim above must leave exactly one slot occupied (probeLimit
+        // is 1 by default) - a second admit at the same instant, with no
+        // further reclaim possible, must be rejected.
+        Assert::same(
+            $this->admitOn($this->storage, 'svc', $config, $probeTime->modify('+5 seconds'))->admission(),
+            Admission::Rejected,
         );
     }
 
@@ -252,12 +346,18 @@ final class InMemoryStorageTest
         $first = $this->recordOn($this->storage, 'svc', Outcome::Success, $config, $probeTime, Admission::Probe)->state();
         Assert::same($first->state(), CircuitState::HalfOpen);
         Assert::same($first->successes(), 1);
+        Assert::same($first->failures(), 0);
 
         $this->admitOn($this->storage, 'svc', $config, $probeTime)->admission();
-        $second = $this->recordOn($this->storage, 'svc', Outcome::Success, $config, $probeTime, Admission::Probe)->state();
+        $secondResult = $this->recordOn($this->storage, 'svc', Outcome::Success, $config, $probeTime, Admission::Probe);
+        $second = $secondResult->state();
 
         Assert::same($second->state(), CircuitState::Closed);
         Assert::same($second->rejected(), 0);
+
+        $transition = $secondResult->transition();
+        Assert::instanceOf($transition, CircuitTransition::class);
+        Assert::same($transition->reason(), TransitionReason::ProbeSucceeded);
     }
 
     public function lateProbeFailureReopensAfterSiblingProbeClosedCircuit(): void
@@ -289,6 +389,7 @@ final class InMemoryStorageTest
         Assert::same($closed->state(), CircuitState::Closed);
         Assert::same($reopened->state(), CircuitState::Open);
         Assert::same($reopened->failures(), 0);
+        Assert::same($reopened->rejected(), 0);
     }
 
     /**
@@ -358,10 +459,15 @@ final class InMemoryStorageTest
 
         $probeTime = $this->base->modify('+31 seconds');
         $this->admitOn($this->storage, 'svc', $config, $probeTime)->admission();
-        $record = $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $probeTime, Admission::Probe)->state();
+        $result = $this->recordOn($this->storage, 'svc', Outcome::Failure, $config, $probeTime, Admission::Probe);
+        $record = $result->state();
 
         Assert::same($record->state(), CircuitState::Open);
         Assert::same($record->rejected(), 1);
+
+        $transition = $result->transition();
+        Assert::instanceOf($transition, CircuitTransition::class);
+        Assert::same($transition->reason(), TransitionReason::ProbeFailed);
     }
 
     public function halfOpenIgnoredOutcomeReleasesSlotWithoutTransition(): void
@@ -404,6 +510,26 @@ final class InMemoryStorageTest
         Assert::same($record->state(), CircuitState::Closed);
         Assert::same($record->failures(), 0);
         Assert::same($record->rejected(), 0);
+    }
+
+    /**
+     * `forceState()` builds its entry from `BreakerState::fresh()` and then
+     * overrides `state` directly - unlike a natural `Open -> HalfOpen`
+     * transition (which `admit()` always resets explicitly), forcing straight
+     * to `HalfOpen` is the one path that exposes `fresh()`'s own
+     * `probeSuccesses`/`probeSlots` values unfiltered.
+     */
+    public function forceStateToHalfOpenStartsWithNoOccupiedProbeSlotsOrSuccesses(): void
+    {
+        $config = $this->config(probeLimit: 1);
+        $this->storage->forceState('svc', CircuitState::HalfOpen, $this->base);
+
+        $record = $this->storage->snapshot('svc');
+        Assert::same($record->successes(), 0);
+        Assert::same($record->failures(), 0);
+
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $this->base)->admission(), Admission::Probe);
+        Assert::same($this->admitOn($this->storage, 'svc', $config, $this->base)->admission(), Admission::Rejected);
     }
 
     public function forceStateReportsAFullyPopulatedTransition(): void
