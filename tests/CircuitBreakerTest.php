@@ -609,7 +609,7 @@ final class CircuitBreakerTest
      * always rejects via `CircuitOpenException` and never invokes the
      * callback.
      */
-    #[Property(runs: 100)]
+    #[Property(runs: 100, timeoutMs: 1000)]
     public function openBreakerAlwaysThrowsAndNeverInvokesCallback(int $cooldownSeconds): void
     {
         $cb = $this->breaker(cooldown: Duration::seconds($cooldownSeconds));
