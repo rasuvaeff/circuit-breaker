@@ -614,7 +614,7 @@ final class InMemoryStorageTest
      * `stateMonotoneWithoutTrigger`: `admit()` alone, however many times, never
      * moves a `Closed` breaker — only `recordOutcome()` (a real outcome) can.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function admitAloneNeverChangesClosedState(int $callCount): void
     {
         $storage = new InMemoryStorage();
@@ -637,7 +637,7 @@ final class InMemoryStorageTest
      * `failuresConservationInClosed`: recording only successes never grows the
      * failure count.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function failuresNeverGrowFromSuccessesAlone(int $successCount): void
     {
         $storage = new InMemoryStorage();
@@ -660,7 +660,7 @@ final class InMemoryStorageTest
      * `openOnlyAfterThreshold`: fewer failures than `failureThreshold` within
      * the window never opens the breaker.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function neverOpensBeforeFailureThresholdIsReached(int $failureThreshold): void
     {
         $belowThreshold = Gen::draw(Gen::intBetween(0, $failureThreshold - 1));
@@ -689,7 +689,7 @@ final class InMemoryStorageTest
      * `halfOpenOnlyAfterCooldown`: `admit()` never grants `HalfOpen` before
      * `openedAt + cooldown` has elapsed.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function neverEntersHalfOpenBeforeCooldownElapses(int $cooldownSeconds): void
     {
         $elapsedSeconds = Gen::draw(Gen::intBetween(0, $cooldownSeconds - 1));
@@ -714,7 +714,7 @@ final class InMemoryStorageTest
      * `halfOpenToClosedNeedsN`: `HalfOpen` stays `HalfOpen` for every success
      * before `successThreshold`, and only closes on the Nth.
      */
-    #[Property(runs: 150)]
+    #[Property(runs: 150, timeoutMs: 1000)]
     public function halfOpenClosesOnlyAfterSuccessThresholdConsecutiveSuccesses(int $successThreshold): void
     {
         $storage = new InMemoryStorage();
@@ -745,7 +745,7 @@ final class InMemoryStorageTest
      * to `Open` immediately and restarts the cooldown clock at that failure's
      * timestamp.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function halfOpenFailureReopensAndRestartsCooldown(int $successThreshold): void
     {
         $storage = new InMemoryStorage();
@@ -770,7 +770,7 @@ final class InMemoryStorageTest
      * `rejectedCounterIsMonotone`: every rejected `admit()` in `Open` increments
      * `rejected` by exactly 1.
      */
-    #[Property(runs: 200)]
+    #[Property(runs: 200, timeoutMs: 1000)]
     public function rejectedCounterIncrementsOnceForEachRejectedAdmit(int $attempts): void
     {
         $storage = new InMemoryStorage();
