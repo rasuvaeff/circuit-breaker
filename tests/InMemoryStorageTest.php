@@ -16,6 +16,7 @@ use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
 use Rasuvaeff\CircuitBreaker\TransitionReason;
 use Rasuvaeff\Duration\Duration;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Testo\Assert;
@@ -729,9 +730,14 @@ final class InMemoryStorageTest
         }
 
         $this->admitOn($storage, 'svc', $config, $probeTime)->admission();
-        $final = $this->recordOn($storage, 'svc', Outcome::Success, $config, $probeTime, Admission::Probe)->state();
+        $finalOutcome = $this->recordOn($storage, 'svc', Outcome::Success, $config, $probeTime, Admission::Probe);
 
-        Assert::same($final->state(), CircuitState::Closed);
+        Classify::cover(
+            $finalOutcome->transition()?->reason() === TransitionReason::ProbeSucceeded,
+            'halfOpen closes on ProbeSucceeded',
+            100.0,
+        );
+        Assert::same($finalOutcome->state()->state(), CircuitState::Closed);
     }
 
     /** @return array<string, ArbitraryInterface> */
@@ -754,10 +760,15 @@ final class InMemoryStorageTest
         $probeTime = $this->base->modify('+31 seconds');
         $this->admitOn($storage, 'svc', $config, $probeTime)->admission();
 
-        $record = $this->recordOn($storage, 'svc', Outcome::Failure, $config, $probeTime, Admission::Probe)->state();
+        $outcome = $this->recordOn($storage, 'svc', Outcome::Failure, $config, $probeTime, Admission::Probe);
 
-        Assert::same($record->state(), CircuitState::Open);
-        Assert::same($record->openedAt()->getTimestamp(), $probeTime->getTimestamp());
+        Classify::cover(
+            $outcome->transition()?->reason() === TransitionReason::ProbeFailed,
+            'halfOpen reopens on ProbeFailed',
+            100.0,
+        );
+        Assert::same($outcome->state()->state(), CircuitState::Open);
+        Assert::same($outcome->state()->openedAt()->getTimestamp(), $probeTime->getTimestamp());
     }
 
     /** @return array<string, ArbitraryInterface> */
