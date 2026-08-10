@@ -74,8 +74,9 @@ docker run --rm -v "$PWD":/app -w /app composer:2 composer test
 docker run --rm -v "$PWD":/app -w /app composer:2 composer release-check
 ```
 
-`rasuvaeff/duration` and `rasuvaeff/property-testing` are normal Packagist
-dependencies (`^1.0`/`^2.6`) — no path-repo, no monorepo-root mount needed.
+`rasuvaeff/duration` and `rasuvaeff/property-testing-testo` are normal
+Packagist dependencies (`^1.0`/`^0.1`) — no path-repo, no monorepo-root mount
+needed.
 
 ### Integration & mutation need Redis + APCu
 
@@ -178,7 +179,7 @@ provides a `redis:7-alpine` service container + `REDIS_HOST`, plus
   `psalm.xml` — static analysis needs no extensions installed.
   `composer-require-checker.json` whitelists the `apcu_*` symbols plus
   `Predis\ClientInterface`, `Predis\Response\ServerException`, and `Redis`
-  (no required package declares them). `property-testing` (dev) needs
+  (no required package declares them). `property-testing-testo` (dev) needs
   `ext-mbstring` → CI `extensions: json, mbstring`.
 - **`rasuvaeff/retry` and `rasuvaeff/bulkhead` are composition partners, not
   dependencies** — do not add either to `require`/`require-dev`. The
