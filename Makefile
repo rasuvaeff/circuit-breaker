@@ -32,7 +32,13 @@ test-coverage:
 test-coverage-ci:
 	$(DOCKER) sh -lc '$(PCOV_BOOTSTRAP) && composer test:coverage:ci'
 
+# The plain target runs without Redis or APCu, where RedisStorage and
+# ApcuStorage are covered by nothing and their mutants survive — MSI lands
+# around 83 against a gate of 96 and looks like a regression that is not one.
+# AGENTS.md carries the full recipe; this line is here because whoever types
+# `make mutation` is not reading AGENTS.md at that moment.
 mutation:
+	@echo "note: without REDIS_HOST and APCu, RedisStorage/ApcuStorage mutants survive — see AGENTS.md before believing the MSI"
 	$(DOCKER) sh -lc '$(PCOV_BOOTSTRAP) && composer mutation'
 
 rector:
