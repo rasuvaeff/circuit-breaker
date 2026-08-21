@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.3 — 2026-08-21
+
+- Document that `probeLimit` bounds admitted/leased `HalfOpen` slots, not concurrent execution against the downstream: because the probe lease is generation-wide rather than per-probe, a `probeTimeout` shorter than real downstream latency lets an expired lease reclaim all slots at once and admit fresh probes on top of ones still genuinely running. No behavior change — this clarifies `BreakerConfig::$probeLimit`, `Storage::admit()`, README.md, README.ru.md, and llms.txt to match the actual (and always-intended) guarantee, and points at pairing with `rasuvaeff/bulkhead` for a hard concurrency cap.
+- Adopt `rasuvaeff/rector-named-literals` and apply the named-argument rule to literal calls.
+- Raise `rasuvaeff/property-testing-testo` to `^0.6`.
+
 ## 1.1.2 — 2026-07-25
 
 - Reject trailing newlines in breaker-name validation: anchor

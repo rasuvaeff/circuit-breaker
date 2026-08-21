@@ -166,12 +166,21 @@ $storage = new ApcuStorage();
 - **`successThreshold`** — consecutive `HalfOpen` probe successes needed to
   close. `1` closes on the first successful probe; higher values demand
   sustained recovery before resuming full traffic.
-- **`probeLimit`** — concurrent probes admitted in `HalfOpen` (default `1`).
-  `1` is the safest default (single canary call); raising it to 3-5 improves
-  recovery throughput at the cost of sending more traffic to a dependency
-  that might still be unhealthy.
+- **`probeLimit`** — probes admitted (leased) per `HalfOpen` generation
+  (default `1`). `1` is the safest default (single canary call); raising it
+  to 3-5 improves recovery throughput at the cost of sending more traffic to
+  a dependency that might still be unhealthy. **This bounds admitted slots,
+  not concurrent execution against the downstream** — see the `probeTimeout`
+  caveat below.
 - **`probeTimeout`** — maximum lifetime of an admitted HalfOpen probe lease;
-  defaults to `cooldown`. Abandoned slots are reclaimed automatically.
+  defaults to `cooldown`. Abandoned slots are reclaimed automatically. The
+  lease is generation-wide, not per-probe: if `probeTimeout` is shorter than
+  real downstream latency, an expired lease reclaims *all* `probeLimit` slots
+  at once, and fresh probes can be admitted on top of ones that are still
+  genuinely running — so real concurrent calls against the downstream can
+  briefly exceed `probeLimit`. Size `probeTimeout` above expected downstream
+  latency, or pair this package with `rasuvaeff/bulkhead` if you need a hard
+  cap on concurrent downstream calls regardless of lease timing.
 - **`isFailure`** — required classifier. Filter to exceptions that actually
   indicate the *downstream* is unhealthy (network errors, 5xx responses).
 
