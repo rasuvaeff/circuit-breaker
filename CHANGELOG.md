@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.2.0 — 2026-08-21
+
+- Fix the Redis Closed-window ring: equal-score ZSET members sort lexicographically, and count-eviction removes the lexicographically smallest, so during a same-millisecond outcome burst a double-digit seq member ("10:f" < "7:s") evicted itself at insertion instead of the oldest entry — a hot breaker (more than `window` outcomes per millisecond) could fail to open at all while the downstream was failing. The seq is now zero-padded to fixed width, restoring insertion-order eviction. Parity scenarios added to both `InMemoryStorageTest` and `RedisIntegrationTest` (golden rule 3).
+- Preserve the downstream exception when storage fails while recording its outcome: `StorageFailure` now carries a public readonly `downstreamOutcome` property with the exception the callback threw (previously it was lost entirely — unreachable through the chain). `null` when the callback succeeded or had not run.
+- Report `openedAt` as epoch 0 for a never-opened breaker consistently across all backends (`InMemoryStorage`/`ApcuStorage` previously used the system clock for an unknown key — the only non-injected time source in the package).
+- Docs: fix the breaker-name pattern shown in README.md/README.ru.md/llms.txt to the `\z` anchor the code actually uses (`$` matches before a trailing newline); add a clock-skew caveat for `canCall()`/`retryAfter` under `useServerTime: true`.
+
 ## 1.1.3 — 2026-08-21
 
 - Document that `probeLimit` bounds admitted/leased `HalfOpen` slots, not concurrent execution against the downstream: because the probe lease is generation-wide rather than per-probe, a `probeTimeout` shorter than real downstream latency lets an expired lease reclaim all slots at once and admit fresh probes on top of ones still genuinely running. No behavior change — this clarifies `BreakerConfig::$probeLimit`, `Storage::admit()`, README.md, README.ru.md, and llms.txt to match the actual (and always-intended) guarantee, and points at pairing with `rasuvaeff/bulkhead` for a hard concurrency cap.

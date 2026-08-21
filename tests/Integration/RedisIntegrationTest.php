@@ -159,6 +159,56 @@ final class RedisIntegrationTest
         Assert::same($this->storage->snapshot(self::NAME)->successes(), 3);
     }
 
+    /**
+     * A same-millisecond burst longer than the window must still open the
+     * breaker. Equal-score ZSET members sort lexicographically and
+     * count-eviction removes the lexicographically smallest, so before the
+     * zero-padded seq fix a double-digit seq self-evicted at insertion
+     * ("10:f" < "7:s"): the failures never accumulated and the breaker
+     * stayed closed forever, diverging from InMemoryStorage. Golden rule 3:
+     * this scenario exists in BOTH InMemoryStorageTest and here.
+     */
+    public function sameTimestampBurstLongerThanWindowStillOpens(): void
+    {
+        if (!isset($this->storage)) {
+            return;
+        }
+
+        $config = $this->config(failures: 3, window: 3);
+
+        for ($i = 0; $i < 9; ++$i) {
+            $this->recordOn($this->storage, self::NAME, Outcome::Success, $config, $this->base);
+        }
+
+        $this->recordOn($this->storage, self::NAME, Outcome::Failure, $config, $this->base);
+        $this->recordOn($this->storage, self::NAME, Outcome::Failure, $config, $this->base);
+        $record = $this->recordOn($this->storage, self::NAME, Outcome::Failure, $config, $this->base)->state();
+
+        Assert::same($record->state(), CircuitState::Open);
+    }
+
+    /**
+     * Count-eviction must also push a FAILURE out of the window (the
+     * pre-existing cap tests only ever evicted successes).
+     */
+    public function failureEvictedByCountNoLongerCounts(): void
+    {
+        if (!isset($this->storage)) {
+            return;
+        }
+
+        $config = $this->config(failures: 2, window: 3);
+
+        $this->recordOn($this->storage, self::NAME, Outcome::Failure, $config, $this->base);
+        $this->recordOn($this->storage, self::NAME, Outcome::Success, $config, $this->base->modify('+1 second'));
+        $this->recordOn($this->storage, self::NAME, Outcome::Success, $config, $this->base->modify('+2 seconds'));
+        $record = $this->recordOn($this->storage, self::NAME, Outcome::Success, $config, $this->base->modify('+3 seconds'))->state();
+
+        Assert::same($record->state(), CircuitState::Closed);
+        Assert::same($record->failures(), 0);
+        Assert::same($record->successes(), 3);
+    }
+
     public function entriesOlderThanWithinAreEvicted(): void
     {
         if (!isset($this->storage)) {

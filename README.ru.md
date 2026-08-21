@@ -118,7 +118,7 @@ $storage = new ApcuStorage();
 | `Outcome` | Enum: `Success`, `Failure`, `Ignored` — результат классификации `isFailure()` |
 | `Admission` | Enum: `Allowed`, `Probe`, `Rejected` — решение `Storage::admit()` |
 | `Storage` | Интерфейс: `admit`, `recordOutcome`, `snapshot`, `forceState` — шов распределённого состояния. `admit()`/`recordOutcome()` требуют fencing-тройку (`admission`, `admittedAt`, `attemptId`) |
-| `StorageFailure` | Инфраструктурное исключение отказа storage: `operation`, `breakerName` и исходная ошибка |
+| `StorageFailure` | Инфраструктурное исключение отказа storage: `operation`, `breakerName`, исходная ошибка и `downstreamOutcome` (исключение callback'а, когда storage отказал при записи именно его исхода) |
 | `InMemoryStorage` | Однопроцессное хранилище (тесты/CLI); без межпроцессной координации |
 | `ApcuStorage` | Межпроцессное хранилище на одном хосте; lock на `apcu_add` (lease, `lockTtlSeconds`) вокруг всего цикла чтение-переход-запись |
 | `RedisStorage` | Межпроцессное хранилище на несколько хостов; один Lua-скрипт на каждый метод `Storage` |
@@ -220,7 +220,7 @@ Redis: критическая секция, пережившая свою lease,
 
 ## Безопасность
 
-- `name` валидируется по `/^[A-Za-z0-9_.:-]+$/` и становится частью
+- `name` валидируется по `/^[A-Za-z0-9_.:-]+\z/` и становится частью
   Redis/APCu-ключа — недоверенные имена отклоняются, а не слепо
   интерполируются.
 - Значения попадают в Lua-скрипты как связанные `ARGV`/`KEYS`, никогда через
@@ -236,8 +236,12 @@ Redis: критическая секция, пережившая свою lease,
 - **Ошибки storage не являются ошибками downstream.** Исключение из
   `recordOutcome()` оборачивается в `StorageFailure`, не проходит через
   `isFailure` и не вызывает `fallback`; wrapper содержит операцию и
-  исходное исключение в `getPrevious()`. См. паттерн логирования и деградации
-  в `examples/07-storage-outage.php`.
+  исходное исключение в `getPrevious()`. Если callback уже бросил исключение,
+  а storage отказал при записи именно этого исхода, `StorageFailure`
+  приоритетнее downstream-исключения — но само downstream-исключение остаётся
+  доступным через публичное свойство `downstreamOutcome` wrapper'а, так что
+  его можно залогировать или среагировать на него. См. паттерн логирования и
+  деградации в `examples/07-storage-outage.php`.
 - **Часы и режим времени.** `RedisStorage` по умолчанию использует время Redis
   для cooldown и lease зондов. Передавайте `useServerTime: false` только для
   детерминированных тестов: этот режим сравнивает часы вызывающей стороны и
@@ -245,6 +249,14 @@ Redis: критическая секция, пережившая свою lease,
   поэтому для него также нужен NTP. Fencing зондов не зависит от синхронизации
   часов: Redis проверяет opaque attempt ID по активному поколению в обоих
   режимах времени.
+  Одна оговорка даже при `useServerTime: true`: `canCall()` и `retryAfter` в
+  `CircuitOpenException` сравнивают часы *вызывающей стороны* с `openedAt`,
+  проставленным Redis, поэтому при рассинхроне часов они могут расходиться с
+  решением `admit()` (который целиком опирается на серверное время) на
+  величину рассинхрона. `retryAfter` никогда не уходит в прошлое — он
+  клампится к `now`, — но при возможном дрейфе часов приложения и Redis
+  считайте его ориентировочным, а не точным. Свежий, ни разу не открывавшийся
+  breaker отдаёт `openedAt` = epoch 0 в snapshot/metrics (во всех backend'ах).
 - **`snapshot()` никогда не мутирует.** Он не применяет отложенный переход
   `Open` → `HalfOpen` по cooldown и не обрезает скользящее окно — это делают
   только `admit()`/`recordOutcome()` внутри `call()`. Поэтому

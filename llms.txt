@@ -52,8 +52,10 @@ Namespace `Rasuvaeff\CircuitBreaker`.
 - Outcomes are timestamped when the callback completes. Storage exceptions
   become `StorageFailure` infrastructure errors; they are never classified by
   `isFailure` and never trigger `fallback`. Inspect `operation` and
-  `getPrevious()` for logging/degradation.
-- `name` must match `/^[A-Za-z0-9_.:-]+$/` (it becomes part of the Redis/APCu key).
+  `getPrevious()` for logging/degradation. When the callback had already
+  thrown and storage failed while recording that outcome, the callback's
+  exception is preserved on `StorageFailure->downstreamOutcome`.
+- `name` must match `/^[A-Za-z0-9_.:-]+\z/` (it becomes part of the Redis/APCu key).
 - `InMemoryStorage` is single-process only (tests/CLI) — not cross-process.
 - `ApcuStorage` only coordinates workers on the same host — use `RedisStorage`
   across hosts. Lock-budget exhaustion throws; through `CircuitBreaker` it is

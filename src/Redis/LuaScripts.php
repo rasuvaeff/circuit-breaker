@@ -149,7 +149,17 @@ final class LuaScripts
 
                 local seq = redis.call('HINCRBY', KEYS[1], 'seq', 1)
                 local suffix = outcome == 'failure' and 'f' or 's'
-                redis.call('ZADD', KEYS[2], now, seq .. ':' .. suffix)
+                -- The seq is zero-padded because equal-score ZSET members sort
+                -- lexicographically and count-eviction below removes the
+                -- lexicographically smallest: with bare digits, "10:f" < "7:s",
+                -- so during a same-millisecond burst the just-inserted entry
+                -- would evict itself instead of the oldest one and the breaker
+                -- could fail to open. Fixed width keeps lexicographic order ==
+                -- insertion order. (No migration concern: a mixed-format ring
+                -- would misorder only members sharing one millisecond across
+                -- the script swap itself, and pre-swap members age out via the
+                -- time prune below within `withinMs` regardless.)
+                redis.call('ZADD', KEYS[2], now, string.format('%020d', seq) .. ':' .. suffix)
 
                 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', '(' .. tostring(now - withinMs))
 
