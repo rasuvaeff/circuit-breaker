@@ -152,7 +152,8 @@ final readonly class ApcuStorage implements Storage
     #[\Override]
     public function snapshot(string $key): StateRecord
     {
-        return BreakerState::toStateRecord($this->entryFor($key, new \DateTimeImmutable()));
+        // Epoch 0 for an unknown key, matching RedisStorage and InMemoryStorage.
+        return BreakerState::toStateRecord($this->entryFor($key, new \DateTimeImmutable('@0')));
     }
 
     #[\Override]

@@ -117,7 +117,7 @@ $storage = new ApcuStorage();
 | `Outcome` | Enum: `Success`, `Failure`, `Ignored` — result of `isFailure()` classification |
 | `Admission` | Enum: `Allowed`, `Probe`, `Rejected` — `Storage::admit()`'s decision |
 | `Storage` | Interface: `admit`, `recordOutcome`, `snapshot`, `forceState` — the distributed-state seam. `admit()`/`recordOutcome()` require the fencing triple (`admission`, `admittedAt`, `attemptId`) |
-| `StorageFailure` | Infrastructure exception for storage outages; exposes `operation`, `breakerName`, and the original exception |
+| `StorageFailure` | Infrastructure exception for storage outages; exposes `operation`, `breakerName`, the original exception, and `downstreamOutcome` (the callback's exception when storage failed while recording it) |
 | `InMemoryStorage` | Single-process store (tests/CLI); no cross-process coordination |
 | `ApcuStorage` | Single-host cross-process store; `apcu_add` lock (lease, `lockTtlSeconds`) around the whole read-transition-write |
 | `RedisStorage` | Multi-host cross-process store; one Lua script per `Storage` method |
@@ -215,7 +215,7 @@ spread across hosts.
 
 ## Security
 
-- `name` is validated against `/^[A-Za-z0-9_.:-]+$/` and becomes part of the
+- `name` is validated against `/^[A-Za-z0-9_.:-]+\z/` and becomes part of the
   Redis/APCu key — untrusted names are rejected, not interpolated blindly.
 - Values flow into the Lua scripts as bound `ARGV`/`KEYS`, never
   string-concatenated.
@@ -230,7 +230,11 @@ spread across hosts.
 - **Storage failures are not downstream failures.** An exception from
   `recordOutcome()` is wrapped in `StorageFailure`, is never passed through
   `isFailure`, and does not trigger `fallback`; the wrapper exposes the
-  failed operation and the original exception via `getPrevious()`. See
+  failed operation and the original exception via `getPrevious()`. When the
+  callback had already thrown and the storage failed while recording that
+  very outcome, the `StorageFailure` outranks the downstream exception — but
+  the downstream exception stays reachable via the wrapper's public
+  `downstreamOutcome` property, so it can still be logged or reacted to. See
   `examples/07-storage-outage.php` for a logging/degradation pattern.
 - **Clocks and time mode.** `RedisStorage` uses Redis server time by default for
   cooldown and probe leases. Pass `useServerTime: false` only for deterministic
@@ -238,6 +242,14 @@ spread across hosts.
   APCu always uses the caller clock, so hosts using it must run NTP. Probe
   fencing does not depend on clock synchronization: Redis validates the opaque
   attempt ID against the active probe generation in both time modes.
+  One caveat even with `useServerTime: true`: `canCall()` and the
+  `retryAfter` on `CircuitOpenException` compare the *caller's* clock against
+  an `openedAt` stamped by Redis, so under clock skew they can disagree with
+  what `admit()` (which decides entirely on server time) would do, by up to
+  the skew amount. `retryAfter` never goes into the past — it is clamped to
+  `now` — but treat it as advisory, not exact, when app and Redis clocks may
+  drift. A fresh, never-opened breaker reports `openedAt` as epoch 0 in
+  snapshots/metrics (all backends).
 - **`snapshot()` never mutates.** It does not apply the lazy `Open` →
   `HalfOpen` cooldown transition and does not prune the sliding window — only
   `call()` (via `admit()`/`recordOutcome()`) does. `state()`/`metrics()`

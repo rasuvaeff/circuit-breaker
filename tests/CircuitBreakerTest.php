@@ -242,6 +242,7 @@ final class CircuitBreakerTest
         Assert::same($caught->operation, 'recordOutcome');
         Assert::instanceOf($caught->getPrevious(), \RuntimeException::class);
         Assert::same($caught->getPrevious()?->getMessage(), 'storage unavailable');
+        Assert::null($caught->downstreamOutcome);
         Assert::same($storage->recordCalls, 1);
         Assert::same(preg_match('/^[a-f0-9]{32}:1$/', (string) $storage->admitAttemptIds[0]), 1);
         Assert::same($storage->recordAttemptIds[0], $storage->admitAttemptIds[0]);
@@ -254,6 +255,90 @@ final class CircuitBreakerTest
 
         Assert::same(preg_match('/^[a-f0-9]{32}:2$/', (string) $storage->admitAttemptIds[1]), 1);
         Assert::same($storage->recordAttemptIds[1], $storage->admitAttemptIds[1]);
+    }
+
+    /**
+     * When the callback has ALREADY thrown and the storage fails while
+     * recording that outcome, the StorageFailure outranks the downstream
+     * exception (an infrastructure problem is not a downstream verdict) and
+     * fallback is not invoked - but the downstream exception must stay
+     * reachable via the wrapper's downstreamOutcome property, or the caller
+     * can neither log the 503 nor react to it.
+     */
+    public function storageFailureWhileRecordingAThrownOutcomePreservesTheDownstreamException(): void
+    {
+        $storage = new class implements Storage {
+            #[\Override]
+            public function admit(
+                string $key,
+                BreakerConfig $config,
+                \DateTimeImmutable $now,
+                string $attemptId,
+            ): AdmissionResult {
+                return new AdmissionResult(Admission::Allowed);
+            }
+
+            #[\Override]
+            public function recordOutcome(
+                string $key,
+                Outcome $outcome,
+                BreakerConfig $config,
+                \DateTimeImmutable $now,
+                Admission $admission,
+                \DateTimeImmutable $admittedAt,
+                string $attemptId,
+            ): OutcomeResult {
+                throw new \RuntimeException('storage unavailable');
+            }
+
+            #[\Override]
+            public function snapshot(string $key): StateRecord
+            {
+                return new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
+            }
+
+            #[\Override]
+            public function forceState(
+                string $key,
+                CircuitState $state,
+                \DateTimeImmutable $now,
+            ): ?CircuitTransition {
+                return null;
+            }
+        };
+        $cb = new CircuitBreaker(
+            config: new BreakerConfig(
+                name: 'svc',
+                failureThreshold: Ratio::of(1, 1, Duration::seconds(60)),
+                cooldown: Duration::seconds(30),
+                successThreshold: 1,
+                isFailure: static fn(\Throwable $e): bool => true,
+            ),
+            storage: $storage,
+            clock: $this->clock,
+        );
+        $downstream = new \DomainException('downstream 503');
+        $fallbackInvoked = false;
+        $caught = null;
+
+        try {
+            $cb->call(
+                callback: static fn(): string => throw $downstream,
+                fallback: static function (\Throwable $e) use (&$fallbackInvoked): string {
+                    $fallbackInvoked = true;
+
+                    return 'fallback';
+                },
+            );
+        } catch (\Throwable $e) {
+            $caught = $e;
+        }
+
+        Assert::instanceOf($caught, StorageFailure::class);
+        Assert::same($caught->operation, 'recordOutcome');
+        Assert::same($caught->getPrevious()?->getMessage(), 'storage unavailable');
+        Assert::same($caught->downstreamOutcome, $downstream);
+        Assert::false($fallbackInvoked);
     }
 
     #[DataProvider('storageFailureCarriesTheOperationThatFailedProvider')]

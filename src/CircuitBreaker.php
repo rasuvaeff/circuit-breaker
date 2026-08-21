@@ -99,12 +99,13 @@ final class CircuitBreaker
             try {
                 $isFailure = $this->config->isFailure($e);
             } catch (\Throwable $classifierError) {
-                $this->recordOutcome($key, Outcome::Ignored, $admission, $now, $attemptId);
+                $this->recordOutcomeFor($e, $key, Outcome::Ignored, $admission, $now, $attemptId);
 
                 throw $classifierError;
             }
 
-            $this->recordOutcome(
+            $this->recordOutcomeFor(
+                downstreamOutcome: $e,
                 key: $key,
                 outcome: $isFailure ? Outcome::Failure : Outcome::Ignored,
                 admission: $admission,
@@ -275,6 +276,38 @@ final class CircuitBreaker
             ),
         );
         $this->observe($result->transition());
+    }
+
+    /**
+     * Same as {@see recordOutcome()}, for the path where the callback has
+     * already thrown `$downstreamOutcome`: a {@see StorageFailure} raised
+     * while recording that outcome would otherwise erase the downstream
+     * exception entirely — re-wrap it with the downstream exception attached.
+     *
+     * @param non-empty-string $key
+     * @param non-empty-string $attemptId
+     */
+    private function recordOutcomeFor(
+        \Throwable $downstreamOutcome,
+        string $key,
+        Outcome $outcome,
+        Admission $admission,
+        \DateTimeImmutable $admittedAt,
+        string $attemptId,
+    ): void {
+        try {
+            $this->recordOutcome($key, $outcome, $admission, $admittedAt, $attemptId);
+        } catch (StorageFailure $storageFailure) {
+            /** @var \Throwable $storageCause */
+            $storageCause = $storageFailure->getPrevious();
+
+            throw new StorageFailure(
+                operation: $storageFailure->operation,
+                breakerName: $storageFailure->breakerName,
+                previous: $storageCause,
+                downstreamOutcome: $downstreamOutcome,
+            );
+        }
     }
 
     private function observe(?CircuitTransition $transition): void

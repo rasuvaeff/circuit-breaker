@@ -83,7 +83,11 @@ final class InMemoryStorage implements Storage
     #[\Override]
     public function snapshot(string $key): StateRecord
     {
-        return BreakerState::toStateRecord($this->entries[$key] ?? BreakerState::fresh(new \DateTimeImmutable()));
+        // Epoch 0 for an unknown key, matching RedisStorage: a fresh Closed
+        // entry has no meaningful openedAt, and the system clock here would be
+        // the only nondeterministic time source in an otherwise clock-injected
+        // package.
+        return BreakerState::toStateRecord($this->entries[$key] ?? BreakerState::fresh(new \DateTimeImmutable('@0')));
     }
 
     #[\Override]
