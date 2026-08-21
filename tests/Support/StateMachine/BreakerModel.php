@@ -23,7 +23,7 @@ final readonly class BreakerModel
 
     public function withFailure(): self
     {
-        return new self($this->now, true, $this->cooldownCouldHaveElapsed);
+        return new self($this->now, anyFailureRecorded: true, cooldownCouldHaveElapsed: $this->cooldownCouldHaveElapsed);
     }
 
     public function withTimeAdvancedBy(\DateInterval $interval, bool $pastCooldown): self

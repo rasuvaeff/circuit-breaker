@@ -38,7 +38,13 @@ interface Storage
      *
      * - `Open` and `now >= openedAt + cooldown` → transition to `HalfOpen`
      *   (fresh probe counters), then fall through to the `HalfOpen` case below.
-     * - `HalfOpen` → occupy one of `probeLimit` probe slots if one is free.
+     * - `HalfOpen` → occupy one of `probeLimit` leased probe slots if one is
+     *   free. The lease is generation-wide, not per-probe: if a lease expires
+     *   while a probe is still genuinely running (i.e. `probeTimeout` is
+     *   shorter than real downstream latency), all slots are reclaimed at
+     *   once and fresh probes can be admitted on top of it — `probeLimit`
+     *   bounds admitted/leased slots, not concurrent execution against the
+     *   downstream. See `BreakerConfig::$probeLimit`.
      * - `Closed` → always `Allowed`.
      *
      * Every `Rejected` decision atomically increments the `rejected` counter.

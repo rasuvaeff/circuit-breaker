@@ -35,12 +35,20 @@ Namespace `Rasuvaeff\CircuitBreaker`.
   when the callback threw and `isFailure()` classified it as `Failure`. An
   `Ignored` outcome (`isFailure() === false`) is ALWAYS rethrown as-is, never
   triggers `fallback`, never counts against the threshold.
-- `probeLimit` (default 1) bounds concurrent probes admitted in `HalfOpen`;
-  `successThreshold` consecutive probe successes close the circuit again; any
-  probe failure reopens immediately and restarts the cooldown clock.
+- `probeLimit` (default 1) bounds probes admitted (leased) per `HalfOpen`
+  generation, NOT concurrent execution against the downstream — see
+  `probeTimeout` below. `successThreshold` consecutive probe successes close
+  the circuit again; any probe failure reopens immediately and restarts the
+  cooldown clock.
 - `probeTimeout` (default `cooldown`) leases HalfOpen probe slots and reclaims
-  abandoned slots after the timeout. `CircuitBreaker::call()` passes an opaque
-  attempt ID so a reclaimed probe cannot affect a newer Redis generation.
+  abandoned slots after the timeout. The lease is generation-wide, not
+  per-probe: if `probeTimeout` is shorter than real downstream latency, an
+  expired lease reclaims ALL `probeLimit` slots at once and fresh probes can
+  be admitted on top of ones still genuinely running — real concurrency can
+  briefly exceed `probeLimit`. Size `probeTimeout` above expected downstream
+  latency, or pair with `rasuvaeff/bulkhead` for a hard concurrency cap.
+  `CircuitBreaker::call()` passes an opaque attempt ID so a reclaimed probe
+  cannot affect a newer Redis generation.
 - Outcomes are timestamped when the callback completes. Storage exceptions
   become `StorageFailure` infrastructure errors; they are never classified by
   `isFailure` and never trigger `fallback`. Inspect `operation` and

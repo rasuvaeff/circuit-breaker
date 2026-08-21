@@ -261,8 +261,8 @@ final class CircuitBreakerTest
         StorageOperation $throwingOperation,
         \Closure $trigger,
     ): void {
-        $storage = new class ($throwingOperation) implements Storage {
-            public function __construct(private readonly StorageOperation $throwingOperation) {}
+        $storage = new readonly class ($throwingOperation) implements Storage {
+            public function __construct(private StorageOperation $throwingOperation) {}
 
             #[\Override]
             public function admit(
@@ -447,7 +447,7 @@ final class CircuitBreakerTest
 
                 return 'ok';
             });
-            Assert::true(false);
+            Assert::true(actual: false);
         } catch (CircuitOpenException) {
             // expected
         }
@@ -622,7 +622,7 @@ final class CircuitBreakerTest
 
                 return 'ok';
             });
-            Assert::true(false);
+            Assert::true(actual: false);
         } catch (CircuitOpenException) {
             // expected
         }

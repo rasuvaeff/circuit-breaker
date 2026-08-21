@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Rasuvaeff\RectorNamedLiterals\AddNameToLiteralArgumentRector;
 use Rector\CodeQuality\Rector\Identical\FlipTypeControlToUseExclusiveTypeRector;
 use Rector\CodeQuality\Rector\Identical\SimplifyBoolIdenticalTrueRector;
 use Rector\Config\RectorConfig;
@@ -17,6 +18,7 @@ return RectorConfig::configure()
     ])
     ->withPhpSets(php83: true)
     ->withPreparedSets(deadCode: true, codeQuality: true)
+    ->withRules([AddNameToLiteralArgumentRector::class])
     // Mirrors rasuvaeff/bulkhead: the test suite is reflection-driven by
     // design (#[Property] generator methods, private helpers invoked through
     // ReflectionMethod), so the dead-code rules would strip fixtures Rector

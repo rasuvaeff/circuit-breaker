@@ -37,7 +37,17 @@ final readonly class BreakerConfig
      *                                   `HalfOpen` → `Closed`, `≥ 1`
      * @param callable(\Throwable): bool $isFailure classifies callback exceptions
      *                                   that indicate a downstream failure
-     * @param int      $probeLimit       max concurrent probes admitted in `HalfOpen`, `≥ 1`
+     * @param int      $probeLimit       max probes admitted (leased) per `HalfOpen`
+     *                                   generation, `≥ 1`. This bounds *admitted*
+     *                                   slots, not concurrent execution against the
+     *                                   downstream: a lease is generation-wide, so if
+     *                                   `probeTimeout` is shorter than real downstream
+     *                                   latency, an expired lease reclaims all slots at
+     *                                   once and fresh probes can be admitted on top of
+     *                                   still-running ones. Size `probeTimeout` above
+     *                                   expected downstream latency, or pair this
+     *                                   package with `rasuvaeff/bulkhead` if you need a
+     *                                   hard cap on concurrent downstream calls.
      * @param Duration|null $probeTimeout maximum probe lease; defaults to `cooldown`
      * @param (callable(mixed): Outcome)|null $classifyResult classifies normal
      *                                                        callback results;
