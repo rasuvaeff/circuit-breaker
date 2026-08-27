@@ -21,18 +21,23 @@ use Rasuvaeff\CircuitBreaker\StateRecord;
 use Rasuvaeff\CircuitBreaker\Storage;
 use Rasuvaeff\CircuitBreaker\StorageFailure;
 use Rasuvaeff\CircuitBreaker\StorageOperation;
-use Rasuvaeff\CircuitBreaker\Tests\Support\RecordingObserver;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
 use Rasuvaeff\Duration\Duration;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Invocation;
+use Rasuvaeff\Understudy\Understudy;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
+
+use function Rasuvaeff\Understudy\expect;
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(CircuitBreaker::class)]
@@ -80,16 +85,7 @@ final class CircuitBreakerTest
 
     public function observerReceivesCommittedTransition(): void
     {
-        $observer = new class implements CircuitObserver {
-            /** @var list<CircuitTransition> */
-            public array $events = [];
-
-            #[\Override]
-            public function onTransition(CircuitTransition $transition): void
-            {
-                $this->events[] = $transition;
-            }
-        };
+        $observer = Understudy::for(CircuitObserver::class);
         $cb = $this->breaker(
             failures: 1,
             window: 1,
@@ -97,13 +93,17 @@ final class CircuitBreakerTest
             observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {},
         );
 
+        // Armed before the run; verified by the UnderstudyPlugin after the body.
+        expect(fn() => $observer->onTransition(Arg::any()));
+
         $this->callAndSwallow($cb);
 
-        Assert::same(count($observer->events), 1);
-        Assert::same($observer->events[0]->from(), CircuitState::Closed);
-        Assert::same($observer->events[0]->to(), CircuitState::Open);
-        Assert::same($observer->events[0]->reason()->value, 'failure-threshold-reached');
-        Assert::same($observer->events[0]->state()->state(), $cb->state());
+        $events = $this->transitionsReceivedBy($observer);
+
+        Assert::same($events[0]->from(), CircuitState::Closed);
+        Assert::same($events[0]->to(), CircuitState::Open);
+        Assert::same($events[0]->reason()->value, 'failure-threshold-reached');
+        Assert::same($events[0]->state()->state(), $cb->state());
     }
 
     /**
@@ -113,7 +113,7 @@ final class CircuitBreakerTest
      */
     public function observerReceivesTheCooldownTransitionCommittedByAdmit(): void
     {
-        $observer = new RecordingObserver();
+        $observer = Understudy::for(CircuitObserver::class);
         $cb = $this->breaker(
             failures: 1,
             window: 1,
@@ -122,39 +122,55 @@ final class CircuitBreakerTest
             observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {},
         );
 
+        // Armed before the run; verified by the UnderstudyPlugin after the body.
+        expect(fn() => $observer->onTransition(Arg::any()))->times(3);
+
         $this->callAndSwallow($cb);
         $this->clock->advanceMs(31_000);
         $cb->call(static fn(): string => 'ok');
 
-        Assert::same($observer->reasons(), [
-            'failure-threshold-reached',
-            'cooldown-elapsed',
-            'probe-succeeded',
-        ]);
-        Assert::same($observer->events[1]->from(), CircuitState::Open);
-        Assert::same($observer->events[1]->to(), CircuitState::HalfOpen);
+        $events = $this->transitionsReceivedBy($observer);
+
+        Assert::same(
+            array_map(static fn(CircuitTransition $t): string => $t->reason()->value, $events),
+            [
+                'failure-threshold-reached',
+                'cooldown-elapsed',
+                'probe-succeeded',
+            ],
+        );
+        Assert::same($events[1]->from(), CircuitState::Open);
+        Assert::same($events[1]->to(), CircuitState::HalfOpen);
     }
 
     public function forcedTransitionsAreReportedToTheObserver(): void
     {
-        $observer = new RecordingObserver();
+        $observer = Understudy::for(CircuitObserver::class);
         $cb = $this->breaker(
             observer: $observer,
             observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {},
         );
+
+        // Armed before the run; verified by the UnderstudyPlugin after the body.
+        expect(fn() => $observer->onTransition(Arg::any()))->times(2);
 
         $cb->forceOpen();
         $cb->forceClosed();
 
-        Assert::same($observer->reasons(), ['forced-open', 'forced-closed']);
-        Assert::same($observer->events[0]->to(), CircuitState::Open);
-        Assert::same($observer->events[1]->from(), CircuitState::Open);
-        Assert::same($observer->events[1]->to(), CircuitState::Closed);
+        $events = $this->transitionsReceivedBy($observer);
+
+        Assert::same(
+            array_map(static fn(CircuitTransition $t): string => $t->reason()->value, $events),
+            ['forced-open', 'forced-closed'],
+        );
+        Assert::same($events[0]->to(), CircuitState::Open);
+        Assert::same($events[1]->from(), CircuitState::Open);
+        Assert::same($events[1]->to(), CircuitState::Closed);
     }
 
     public function forcingTheStateAlreadyInEffectReportsNothing(): void
     {
-        $observer = new RecordingObserver();
+        $observer = Understudy::for(CircuitObserver::class);
         $cb = $this->breaker(
             observer: $observer,
             observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {},
@@ -162,63 +178,23 @@ final class CircuitBreakerTest
 
         $cb->forceClosed();
 
-        Assert::same($observer->events, []);
+        Assert::same($this->transitionsReceivedBy($observer), []);
     }
 
     public function storageFailureAfterSuccessfulCallbackIsNotRecordedAsDownstreamFailure(): void
     {
-        $storage = new class implements Storage {
-            public int $recordCalls = 0;
-
-            /** @var list<string> */
-            public array $admitAttemptIds = [];
-
-            /** @var list<string> */
-            public array $recordAttemptIds = [];
-
-            #[\Override]
-            public function admit(
-                string $key,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                string $attemptId,
-            ): AdmissionResult {
-                $this->admitAttemptIds[] = $attemptId;
-
-                return new AdmissionResult(Admission::Allowed);
-            }
-
-            #[\Override]
-            public function recordOutcome(
-                string $key,
-                Outcome $outcome,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                Admission $admission,
-                \DateTimeImmutable $admittedAt,
-                string $attemptId,
-            ): OutcomeResult {
-                ++$this->recordCalls;
-                $this->recordAttemptIds[] = $attemptId;
-
-                throw new \RuntimeException('storage unavailable');
-            }
-
-            #[\Override]
-            public function snapshot(string $key): StateRecord
-            {
-                return new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
-            }
-
-            #[\Override]
-            public function forceState(
-                string $key,
-                CircuitState $state,
-                \DateTimeImmutable $now,
-            ): ?CircuitTransition {
-                return null;
-            }
-        };
+        $storage = Understudy::for(Storage::class);
+        when(fn() => $storage->admit(Arg::any(), Arg::any(), Arg::any(), Arg::any()))
+            ->returns(new AdmissionResult(Admission::Allowed));
+        when(fn() => $storage->recordOutcome(
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+        ))->throws(new \RuntimeException('storage unavailable'));
         $cb = new CircuitBreaker(
             config: new BreakerConfig(
                 name: 'svc',
@@ -243,9 +219,10 @@ final class CircuitBreakerTest
         Assert::instanceOf($caught->getPrevious(), \RuntimeException::class);
         Assert::same($caught->getPrevious()?->getMessage(), 'storage unavailable');
         Assert::null($caught->downstreamOutcome);
-        Assert::same($storage->recordCalls, 1);
-        Assert::same(preg_match('/^[a-f0-9]{32}:1$/', (string) $storage->admitAttemptIds[0]), 1);
-        Assert::same($storage->recordAttemptIds[0], $storage->admitAttemptIds[0]);
+        Assert::same(count($this->recordedAttemptIds($storage)), 1);
+        $firstAdmits = $this->admitAttemptIds($storage);
+        Assert::same(preg_match('/^[a-f0-9]{32}:1$/', $firstAdmits[0]), 1);
+        Assert::same($this->recordedAttemptIds($storage)[0], $firstAdmits[0]);
 
         try {
             $cb->call(static fn(): string => 'ok');
@@ -253,8 +230,9 @@ final class CircuitBreakerTest
             // expected
         }
 
-        Assert::same(preg_match('/^[a-f0-9]{32}:2$/', (string) $storage->admitAttemptIds[1]), 1);
-        Assert::same($storage->recordAttemptIds[1], $storage->admitAttemptIds[1]);
+        $admits = $this->admitAttemptIds($storage);
+        Assert::same(preg_match('/^[a-f0-9]{32}:2$/', $admits[1]), 1);
+        Assert::same($this->recordedAttemptIds($storage)[1], $admits[1]);
     }
 
     /**
@@ -267,45 +245,18 @@ final class CircuitBreakerTest
      */
     public function storageFailureWhileRecordingAThrownOutcomePreservesTheDownstreamException(): void
     {
-        $storage = new class implements Storage {
-            #[\Override]
-            public function admit(
-                string $key,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                string $attemptId,
-            ): AdmissionResult {
-                return new AdmissionResult(Admission::Allowed);
-            }
-
-            #[\Override]
-            public function recordOutcome(
-                string $key,
-                Outcome $outcome,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                Admission $admission,
-                \DateTimeImmutable $admittedAt,
-                string $attemptId,
-            ): OutcomeResult {
-                throw new \RuntimeException('storage unavailable');
-            }
-
-            #[\Override]
-            public function snapshot(string $key): StateRecord
-            {
-                return new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
-            }
-
-            #[\Override]
-            public function forceState(
-                string $key,
-                CircuitState $state,
-                \DateTimeImmutable $now,
-            ): ?CircuitTransition {
-                return null;
-            }
-        };
+        $storage = Understudy::for(Storage::class);
+        when(fn() => $storage->admit(Arg::any(), Arg::any(), Arg::any(), Arg::any()))
+            ->returns(new AdmissionResult(Admission::Allowed));
+        when(fn() => $storage->recordOutcome(
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+        ))->throws(new \RuntimeException('storage unavailable'));
         $cb = new CircuitBreaker(
             config: new BreakerConfig(
                 name: 'svc',
@@ -340,68 +291,49 @@ final class CircuitBreakerTest
         Assert::same($caught->downstreamOutcome, $downstream);
         Assert::false($fallbackInvoked);
     }
-
     #[DataProvider('storageFailureCarriesTheOperationThatFailedProvider')]
     public function storageFailureCarriesTheOperationThatFailed(
         StorageOperation $throwingOperation,
         \Closure $trigger,
     ): void {
-        $storage = new readonly class ($throwingOperation) implements Storage {
-            public function __construct(private StorageOperation $throwingOperation) {}
-
-            #[\Override]
-            public function admit(
-                string $key,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                string $attemptId,
-            ): AdmissionResult {
-                if ($this->throwingOperation === StorageOperation::Admit) {
-                    throw new \RuntimeException('storage unavailable');
-                }
-
-                return new AdmissionResult(Admission::Allowed);
-            }
-
-            #[\Override]
-            public function recordOutcome(
-                string $key,
-                Outcome $outcome,
-                BreakerConfig $config,
-                \DateTimeImmutable $now,
-                Admission $admission,
-                \DateTimeImmutable $admittedAt,
-                string $attemptId,
-            ): OutcomeResult {
-                if ($this->throwingOperation === StorageOperation::RecordOutcome) {
-                    throw new \RuntimeException('storage unavailable');
-                }
-
-                return new OutcomeResult(new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0));
-            }
-
-            #[\Override]
-            public function snapshot(string $key): StateRecord
-            {
-                if ($this->throwingOperation === StorageOperation::Snapshot) {
-                    throw new \RuntimeException('storage unavailable');
-                }
-
-                return new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
-            }
-
-            #[\Override]
-            public function forceState(
-                string $key,
-                CircuitState $state,
-                \DateTimeImmutable $now,
-            ): ?CircuitTransition {
-                if ($this->throwingOperation === StorageOperation::ForceState) {
-                    throw new \RuntimeException('storage unavailable');
-                }
-
-                return null;
-            }
+        $storage = Understudy::for(Storage::class);
+        $closed = new StateRecord(CircuitState::Closed, new \DateTimeImmutable('@0'), 0, 0, 0);
+        when(fn() => $storage->admit(Arg::any(), Arg::any(), Arg::any(), Arg::any()))
+            ->returns(new AdmissionResult(Admission::Allowed));
+        when(fn() => $storage->recordOutcome(
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+            Arg::any(),
+        ))->returns(new OutcomeResult($closed));
+        when(fn() => $storage->snapshot(Arg::any()))->returns($closed);
+        when(fn() => $storage->forceState(Arg::any(), Arg::any(), Arg::any()))->returns(null);
+        // A later stub for the same call wins over the answering one above.
+        $failure = new \RuntimeException('storage unavailable');
+        match ($throwingOperation) {
+            StorageOperation::Admit => when(
+                fn() => $storage->admit(Arg::any(), Arg::any(), Arg::any(), Arg::any()),
+            )->throws($failure),
+            StorageOperation::RecordOutcome => when(
+                fn() => $storage->recordOutcome(
+                    Arg::any(),
+                    Arg::any(),
+                    Arg::any(),
+                    Arg::any(),
+                    Arg::any(),
+                    Arg::any(),
+                    Arg::any(),
+                ),
+            )->throws($failure),
+            StorageOperation::Snapshot => when(
+                fn() => $storage->snapshot(Arg::any()),
+            )->throws($failure),
+            StorageOperation::ForceState => when(
+                fn() => $storage->forceState(Arg::any(), Arg::any(), Arg::any()),
+            )->throws($failure),
         };
         $cb = new CircuitBreaker(
             config: new BreakerConfig(
@@ -753,6 +685,41 @@ final class CircuitBreakerTest
             clock: $this->clock,
             observer: $observer,
             observerErrorHandler: $observerErrorHandler,
+        );
+    }
+
+    /** @return list<CircuitTransition> */
+    private function transitionsReceivedBy(CircuitObserver $observer): array
+    {
+        return array_map(
+            static fn(Invocation $call): CircuitTransition => $call->args[0],
+            Understudy::calls(fn() => $observer->onTransition(Arg::any())),
+        );
+    }
+
+    /** @return list<string> */
+    private function admitAttemptIds(Storage $storage): array
+    {
+        return array_map(
+            static fn(Invocation $call): string => $call->args[3],
+            Understudy::calls(fn() => $storage->admit(Arg::any(), Arg::any(), Arg::any(), Arg::any())),
+        );
+    }
+
+    /** @return list<string> */
+    private function recordedAttemptIds(Storage $storage): array
+    {
+        return array_map(
+            static fn(Invocation $call): string => $call->args[6],
+            Understudy::calls(fn() => $storage->recordOutcome(
+                Arg::any(),
+                Arg::any(),
+                Arg::any(),
+                Arg::any(),
+                Arg::any(),
+                Arg::any(),
+                Arg::any(),
+            )),
         );
     }
 

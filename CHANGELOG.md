@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Switch the test suite's hand-rolled doubles (anonymous `Storage`/`CircuitObserver`/`CircuitScriptRunner` classes, the predis `ClientInterface` fake, and the `RecordingObserver` support class) to `rasuvaeff/understudy` via the `rasuvaeff/understudy-testo` adapter: every double is now `Understudy::for(...)` with `when()`/`expect()`, verification and reset run automatically after each test. Dev-only; no runtime changes.
+
 ## 1.2.0 — 2026-08-21
 
 - Fix the Redis Closed-window ring: equal-score ZSET members sort lexicographically, and count-eviction removes the lexicographically smallest, so during a same-millisecond outcome burst a double-digit seq member ("10:f" < "7:s") evicted itself at insertion instead of the oldest entry — a hot breaker (more than `window` outcomes per millisecond) could fail to open at all while the downstream was failing. The seq is now zero-padded to fixed width, restoring insertion-order eviction. Parity scenarios added to both `InMemoryStorageTest` and `RedisIntegrationTest` (golden rule 3).

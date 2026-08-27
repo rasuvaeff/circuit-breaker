@@ -12,10 +12,14 @@ use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\CircuitBreaker\RedisStorage;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
 use Rasuvaeff\Duration\Duration;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Understudy;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
 use Testo\Test;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(RedisStorage::class)]
@@ -25,18 +29,9 @@ final class RedisStorageTest
 
     public function multiKeyScriptsUseOneRedisClusterHashSlot(): void
     {
-        $runner = new class implements CircuitScriptRunner {
-            /** @var list<string> */
-            public array $keys = [];
-
-            #[\Override]
-            public function run(string $script, array $keys, array $args): mixed
-            {
-                $this->keys = $keys;
-
-                return ['closed', '0', '1', '0', '0', 'closed', '', '0'];
-            }
-        };
+        $runner = Understudy::for(CircuitScriptRunner::class);
+        when(fn() => $runner->run(Arg::any(), Arg::any(), Arg::any()))
+            ->returns(['closed', '0', '1', '0', '0', 'closed', '', '0']);
         $storage = new RedisStorage($runner);
         $config = new BreakerConfig(
             name: 'payments',
@@ -55,7 +50,8 @@ final class RedisStorageTest
             Admission::Allowed,
         )->state();
 
-        Assert::same($runner->keys, [
+        $calls = Understudy::calls(fn() => $runner->run(Arg::any(), Arg::any(), Arg::any()));
+        Assert::same($calls[0]->args[1], [
             'circuit-breaker:{payments}',
             'circuit-breaker:{payments}:ring',
             'circuit-breaker:{payments}:probes',
@@ -64,13 +60,8 @@ final class RedisStorageTest
 
     public function rejectsUnexpectedAdmissionReply(): void
     {
-        $runner = new class implements CircuitScriptRunner {
-            #[\Override]
-            public function run(string $script, array $keys, array $args): string
-            {
-                return 'garbage';
-            }
-        };
+        $runner = Understudy::for(CircuitScriptRunner::class);
+        when(fn() => $runner->run(Arg::any(), Arg::any(), Arg::any()))->returns('garbage');
         $storage = new RedisStorage($runner);
         $config = new BreakerConfig(
             name: 'payments',
