@@ -50,22 +50,20 @@ composer require predis/predis
 use Psr\Http\Client\ClientExceptionInterface;
 use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
-use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
+use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
-use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\Duration\Duration;
 
 $cb = new CircuitBreaker(
-    config: new BreakerConfig(
+    config: BreakerConfig::forRemoteApi(
         name: 'stripe',
-        failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+        failures: 5, window: 10, within: Duration::seconds(60), // 5 of the last 10 calls within 60s
         cooldown: Duration::seconds(30),   // how long Open lasts before a probe is allowed
-        successThreshold: 3,               // consecutive probe successes to close again
         // Classify only exceptions that indicate a downstream failure.
         isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
     ),
-    storage: new InMemoryStorage(), // or ApcuStorage / RedisStorage - same contract
-    clock: new SystemClock(),
+    storage: new InMemoryStorage(), // single process only: ApcuStorage / RedisStorage for FPM workers
+    // clock: defaults to Clock\SystemClock
 );
 
 $charge = $cb->call(
@@ -73,10 +71,28 @@ $charge = $cb->call(
     fallback: static fn(\Throwable $e): mixed => ChargeResult::queuedForRetry(),
 );
 
-if ($cb->state()->value === 'open') {
+if ($cb->state() === CircuitState::Open) {
     // show a degraded UI without attempting the call
 }
 ```
+
+`forRemoteApi()` defaults `successThreshold` to 1 (one successful probe closes
+the circuit again). The full constructor exposes the same knobs explicitly:
+
+```php
+use Rasuvaeff\CircuitBreaker\Ratio;
+
+$config = new BreakerConfig(
+    name: 'stripe',
+    failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+    cooldown: Duration::seconds(30),
+    successThreshold: 3,               // consecutive probe successes to close again
+    isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
+);
+```
+
+Depend on `CircuitBreakerInterface` rather than the concrete class where a
+decorator or a test double should be able to replace the breaker.
 
 With Redis (multi-host):
 
@@ -110,8 +126,9 @@ $storage = new ApcuStorage();
 
 | Type | Description |
 |---|---|
-| `CircuitBreaker` | `call(callable, ?callable $fallback): mixed`, `canCall()`, `state()`, `metrics()`, `forceOpen()`, `forceClosed()` |
-| `BreakerConfig` | `name`, `failureThreshold` (`Ratio`), `cooldown`, `successThreshold`, required `isFailure`, `probeLimit`, `probeTimeout` |
+| `CircuitBreakerInterface` | The breaker's public surface: `call`, `canCall`, `state`, `metrics`, `forceOpen`, `forceClosed` — type to depend on for decorators and test doubles |
+| `CircuitBreaker` | Implements `CircuitBreakerInterface`; plus `publishState()`. Constructor: `config`, `storage`, optional `clock` (defaults to `SystemClock`), optional `observer` and `observerErrorHandler` |
+| `BreakerConfig` | `name`, `failureThreshold` (`Ratio`), `cooldown`, `successThreshold`, required `isFailure`, `probeLimit`, `probeTimeout`, `classifyResult`; `forRemoteApi(name, failures, window, within, cooldown, isFailure, successThreshold = 1, …)` factory |
 | `Ratio` | "N failures out of the last M calls, within a sliding window" — backs `failureThreshold` |
 | `CircuitState` | Enum: `Closed`, `Open`, `HalfOpen` |
 | `Outcome` | Enum: `Success`, `Failure`, `Ignored` — result of `isFailure()` classification |
@@ -128,8 +145,9 @@ $storage = new ApcuStorage();
 | `Metrics` | Observability snapshot from `CircuitBreaker::metrics()`, mirrors `StateRecord` |
 | `CircuitTransition` | A committed state change: `breakerName`, `from`, `to`, `occurredAt`, `reason`, `state` |
 | `TransitionReason` | Enum: why a transition happened — `FailureThresholdReached`, `CooldownElapsed`, `ProbeSucceeded`, `ProbeFailed`, `ForcedOpen`, `ForcedClosed`, `ForcedHalfOpen` |
-| `CircuitObserver` | Interface receiving committed `CircuitTransition` events; paired with an error handler |
-| `CircuitOpenException` | Thrown (or passed to `fallback`) when a call is rejected; carries `breakerName`, `retryAfter` |
+| `CircuitObserver` | Interface receiving committed `CircuitTransition` events; optional error handler |
+| `CircuitSnapshotObserver` | Extends `CircuitObserver` with `onSnapshot(string $breakerName, Metrics $metrics)`, delivered by `CircuitBreaker::publishState()` |
+| `CircuitOpenException` | Thrown (or passed to `fallback`) when a call is rejected; carries `breakerName`, `retryAfter`; `retryAfterIn(ClockInterface): Duration` gives the time left |
 | `Clock\SystemClock` | `Psr\Clock\ClockInterface` using the wall clock |
 | `Clock\FakeClock` | Controllable clock for testing cooldown/window expiry |
 
@@ -275,8 +293,46 @@ return to `Outcome::Success`. Configure it when an API reports downstream
 failure in a normal value; the original value is still returned and fallback is
 not invoked.
 
-Pass a `CircuitObserver` and its paired error handler to `CircuitBreaker` to
-receive committed `CircuitTransition` events without polling `metrics()`.
+Pass a `CircuitObserver` to `CircuitBreaker` to receive committed
+`CircuitTransition` events without polling `metrics()`. An exception thrown by
+the observer never affects the protected call: it goes to
+`observerErrorHandler` when one is given (typically a logger call) and is
+discarded otherwise.
+
+`onTransition()` fires only on a state change, so a gauge fed by it has no
+series until the breaker first trips. Implement `CircuitSnapshotObserver` and
+call `publishState()` once after wiring, or on every metrics scrape: it reads
+the current state from storage and passes it to `onSnapshot()`. It reads
+storage, so it is never called implicitly; storage errors surface as
+`StorageFailure`, observer errors propagate unchanged.
+
+```php
+use Rasuvaeff\CircuitBreaker\CircuitSnapshotObserver;
+use Rasuvaeff\CircuitBreaker\CircuitTransition;
+use Rasuvaeff\CircuitBreaker\Metrics;
+
+final class OpenGauge implements CircuitSnapshotObserver
+{
+    public function onTransition(CircuitTransition $transition): void
+    {
+        $this->set($transition->breakerName(), $transition->to() === CircuitState::Open);
+    }
+
+    public function onSnapshot(string $breakerName, Metrics $metrics): void
+    {
+        $this->set($breakerName, $metrics->state() === CircuitState::Open);
+    }
+
+    private function set(string $breakerName, bool $open): void { /* gauge->set(...) */ }
+}
+
+$cb = new CircuitBreaker(config: $config, storage: $storage, observer: new OpenGauge());
+$cb->publishState(); // the series exists from now on, even if the breaker never trips
+```
+
+To turn a rejection into a `Retry-After` header or a re-queue delay, use
+`CircuitOpenException::retryAfterIn($clock)`: the time left until `retryAfter`,
+never negative, with microsecond precision.
 `Storage::admit()` returns `AdmissionResult`, and `recordOutcome()` returns
 `OutcomeResult`; both carry optional transition metadata.
 

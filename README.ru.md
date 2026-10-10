@@ -51,22 +51,20 @@ composer require predis/predis
 use Psr\Http\Client\ClientExceptionInterface;
 use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
-use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
+use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
-use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\Duration\Duration;
 
 $cb = new CircuitBreaker(
-    config: new BreakerConfig(
+    config: BreakerConfig::forRemoteApi(
         name: 'stripe',
-        failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+        failures: 5, window: 10, within: Duration::seconds(60), // 5 из последних 10 вызовов за 60 с
         cooldown: Duration::seconds(30),   // сколько длится Open до допуска зонда
-        successThreshold: 3,               // подряд успешных зондов для возврата в Closed
         // Классифицируйте только исключения, означающие отказ downstream.
         isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
     ),
-    storage: new InMemoryStorage(), // или ApcuStorage / RedisStorage — тот же контракт
-    clock: new SystemClock(),
+    storage: new InMemoryStorage(), // только один процесс: для FPM-воркеров ApcuStorage / RedisStorage
+    // clock: по умолчанию Clock\SystemClock
 );
 
 $charge = $cb->call(
@@ -74,10 +72,28 @@ $charge = $cb->call(
     fallback: static fn(\Throwable $e): mixed => ChargeResult::queuedForRetry(),
 );
 
-if ($cb->state()->value === 'open') {
+if ($cb->state() === CircuitState::Open) {
     // показать degrade UI, не пытаясь выполнить вызов
 }
 ```
+
+`forRemoteApi()` по умолчанию ставит `successThreshold` = 1 (один успешный
+зонд снова закрывает цепь). Полный конструктор задаёт те же параметры явно:
+
+```php
+use Rasuvaeff\CircuitBreaker\Ratio;
+
+$config = new BreakerConfig(
+    name: 'stripe',
+    failureThreshold: Ratio::of(failures: 5, window: 10, within: Duration::seconds(60)),
+    cooldown: Duration::seconds(30),
+    successThreshold: 3,               // подряд успешных зондов для возврата в Closed
+    isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
+);
+```
+
+Зависьте от `CircuitBreakerInterface`, а не от конкретного класса, там, где
+breaker должен заменяться декоратором или тестовым дублёром.
 
 С Redis (несколько хостов):
 
@@ -111,8 +127,9 @@ $storage = new ApcuStorage();
 
 | Тип | Описание |
 |---|---|
-| `CircuitBreaker` | `call(callable, ?callable $fallback): mixed`, `canCall()`, `state()`, `metrics()`, `forceOpen()`, `forceClosed()` |
-| `BreakerConfig` | `name`, `failureThreshold` (`Ratio`), `cooldown`, `successThreshold`, обязательный `isFailure`, `probeLimit`, `probeTimeout` |
+| `CircuitBreakerInterface` | Публичная поверхность breaker'а: `call`, `canCall`, `state`, `metrics`, `forceOpen`, `forceClosed` — тип для декораторов и тестовых дублёров |
+| `CircuitBreaker` | Реализует `CircuitBreakerInterface`; плюс `publishState()`. Конструктор: `config`, `storage`, необязательный `clock` (по умолчанию `SystemClock`), необязательные `observer` и `observerErrorHandler` |
+| `BreakerConfig` | `name`, `failureThreshold` (`Ratio`), `cooldown`, `successThreshold`, обязательный `isFailure`, `probeLimit`, `probeTimeout`, `classifyResult`; фабрика `forRemoteApi(name, failures, window, within, cooldown, isFailure, successThreshold = 1, …)` |
 | `Ratio` | «N отказов из последних M вызовов, в пределах скользящего окна» — задаёт `failureThreshold` |
 | `CircuitState` | Enum: `Closed`, `Open`, `HalfOpen` |
 | `Outcome` | Enum: `Success`, `Failure`, `Ignored` — результат классификации `isFailure()` |
@@ -129,8 +146,9 @@ $storage = new ApcuStorage();
 | `Metrics` | Снимок для observability из `CircuitBreaker::metrics()`, зеркалит `StateRecord` |
 | `CircuitTransition` | Зафиксированный переход: `breakerName`, `from`, `to`, `occurredAt`, `reason`, `state` |
 | `TransitionReason` | Enum: причина перехода — `FailureThresholdReached`, `CooldownElapsed`, `ProbeSucceeded`, `ProbeFailed`, `ForcedOpen`, `ForcedClosed`, `ForcedHalfOpen` |
-| `CircuitObserver` | Интерфейс получения зафиксированных `CircuitTransition`; используется в паре с error handler |
-| `CircuitOpenException` | Бросается (или передаётся в `fallback`) при отклонении вызова; несёт `breakerName`, `retryAfter` |
+| `CircuitObserver` | Интерфейс получения зафиксированных `CircuitTransition`; error handler необязателен |
+| `CircuitSnapshotObserver` | Расширяет `CircuitObserver` методом `onSnapshot(string $breakerName, Metrics $metrics)`, который вызывает `CircuitBreaker::publishState()` |
+| `CircuitOpenException` | Бросается (или передаётся в `fallback`) при отклонении вызова; несёт `breakerName`, `retryAfter`; `retryAfterIn(ClockInterface): Duration` возвращает оставшееся время |
 | `Clock\SystemClock` | `Psr\Clock\ClockInterface` на системных часах |
 | `Clock\FakeClock` | Управляемые часы для тестирования истечения cooldown/window |
 
@@ -282,8 +300,46 @@ callback считается `Outcome::Success`. Настройте его, ес�
 отказе обычным значением; исходное значение всё равно возвращается, fallback не
 вызывается.
 
-Передайте `CircuitObserver` и парный обработчик ошибок в `CircuitBreaker`, чтобы
-получать подтверждённые `CircuitTransition` без polling `metrics()`.
+Передайте `CircuitObserver` в `CircuitBreaker`, чтобы получать подтверждённые
+`CircuitTransition` без polling `metrics()`. Исключение из observer'а никогда не
+влияет на защищаемый вызов: оно уходит в `observerErrorHandler`, если он задан
+(обычно вызов логгера), и отбрасывается в противном случае.
+
+`onTransition()` срабатывает только при смене состояния, поэтому у gauge,
+который им питается, нет серии до первого срабатывания breaker'а. Реализуйте
+`CircuitSnapshotObserver` и вызовите `publishState()` один раз после
+связывания или на каждом scrape метрик: он читает текущее состояние из
+storage и передаёт его в `onSnapshot()`. Метод читает storage, поэтому
+никогда не вызывается неявно; ошибки storage приходят как `StorageFailure`,
+ошибки observer'а пробрасываются как есть.
+
+```php
+use Rasuvaeff\CircuitBreaker\CircuitSnapshotObserver;
+use Rasuvaeff\CircuitBreaker\CircuitTransition;
+use Rasuvaeff\CircuitBreaker\Metrics;
+
+final class OpenGauge implements CircuitSnapshotObserver
+{
+    public function onTransition(CircuitTransition $transition): void
+    {
+        $this->set($transition->breakerName(), $transition->to() === CircuitState::Open);
+    }
+
+    public function onSnapshot(string $breakerName, Metrics $metrics): void
+    {
+        $this->set($breakerName, $metrics->state() === CircuitState::Open);
+    }
+
+    private function set(string $breakerName, bool $open): void { /* gauge->set(...) */ }
+}
+
+$cb = new CircuitBreaker(config: $config, storage: $storage, observer: new OpenGauge());
+$cb->publishState(); // серия существует с этого момента, даже если breaker ни разу не сработает
+```
+
+Чтобы превратить отклонение в заголовок `Retry-After` или задержку повторной
+постановки в очередь, используйте `CircuitOpenException::retryAfterIn($clock)`:
+время до `retryAfter`, никогда не отрицательное, с точностью до микросекунды.
 `Storage::admit()` возвращает `AdmissionResult`, а `recordOutcome()` —
 `OutcomeResult`; оба объекта могут содержать данные перехода.
 

@@ -91,6 +91,44 @@ final readonly class BreakerConfig
     }
 
     /**
+     * The common "remote API" shape in one call: the failure ratio is spelled
+     * out as three scalars instead of a nested {@see Ratio}, and
+     * `successThreshold` defaults to 1 (a single successful probe closes the
+     * circuit again).
+     *
+     * @param string                     $name      see the constructor
+     * @param int                        $failures  failures that open the circuit…
+     * @param int                        $window    …out of the last `$window` calls…
+     * @param Duration                   $within    …recorded within this period
+     * @param Duration                   $cooldown  how long `Open` lasts before a probe is allowed
+     * @param callable(\Throwable): bool $isFailure classifies callback exceptions
+     * @param (callable(mixed): Outcome)|null $classifyResult classifies normal results; defaults to Success
+     */
+    public static function forRemoteApi(
+        string $name,
+        int $failures,
+        int $window,
+        Duration $within,
+        Duration $cooldown,
+        callable $isFailure,
+        int $successThreshold = 1,
+        int $probeLimit = 1,
+        ?Duration $probeTimeout = null,
+        ?callable $classifyResult = null,
+    ): self {
+        return new self(
+            name: $name,
+            failureThreshold: Ratio::of(failures: $failures, window: $window, within: $within),
+            cooldown: $cooldown,
+            successThreshold: $successThreshold,
+            isFailure: $isFailure,
+            probeLimit: $probeLimit,
+            probeTimeout: $probeTimeout,
+            classifyResult: $classifyResult,
+        );
+    }
+
+    /**
      * @return non-empty-string
      */
     public function name(): string

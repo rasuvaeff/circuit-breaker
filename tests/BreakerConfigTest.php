@@ -204,4 +204,49 @@ final class BreakerConfigTest
             isFailure: static fn(\Throwable $e): bool => true,
         );
     }
+
+    public function forRemoteApiBuildsTheRatioAndDefaultsTheRest(): void
+    {
+        $config = BreakerConfig::forRemoteApi(
+            name: 'youtube.api',
+            failures: 5,
+            window: 10,
+            within: Duration::seconds(60),
+            cooldown: Duration::seconds(120),
+            isFailure: static fn(\Throwable $e): bool => $e instanceof \RuntimeException,
+        );
+
+        Assert::same($config->name(), 'youtube.api');
+        Assert::same($config->failureThreshold()->failures(), 5);
+        Assert::same($config->failureThreshold()->window(), 10);
+        Assert::true($config->failureThreshold()->within()->equals(Duration::seconds(60)));
+        Assert::true($config->cooldown()->equals(Duration::seconds(120)));
+        Assert::same($config->successThreshold(), 1);
+        Assert::same($config->probeLimit(), 1);
+        Assert::true($config->probeTimeout()->equals(Duration::seconds(120)));
+        Assert::true($config->isFailure(new \RuntimeException()));
+        Assert::false($config->isFailure(new \LogicException()));
+        Assert::same($config->classifyResult('anything'), Outcome::Success);
+    }
+
+    public function forRemoteApiPassesOptionalArgumentsThrough(): void
+    {
+        $config = BreakerConfig::forRemoteApi(
+            name: 'svc',
+            failures: 3,
+            window: 5,
+            within: Duration::seconds(60),
+            cooldown: Duration::seconds(30),
+            isFailure: static fn(\Throwable $e): bool => true,
+            successThreshold: 2,
+            probeLimit: 4,
+            probeTimeout: Duration::seconds(5),
+            classifyResult: static fn(mixed $result): Outcome => Outcome::Failure,
+        );
+
+        Assert::same($config->successThreshold(), 2);
+        Assert::same($config->probeLimit(), 4);
+        Assert::true($config->probeTimeout()->equals(Duration::seconds(5)));
+        Assert::same($config->classifyResult('x'), Outcome::Failure);
+    }
 }

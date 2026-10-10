@@ -25,7 +25,19 @@ Namespace `Rasuvaeff\CircuitBreaker`.
   normal API responses that represent downstream failure; the original result
   is still returned and fallback is not invoked.
 - `CircuitObserver` receives committed `CircuitTransition` events after storage
-  commit; configure its paired error handler to isolate telemetry failures.
+  commit. Observer exceptions never affect the call: they go to the optional
+  `observerErrorHandler` (discarded without one). A handler without an
+  observer throws `InvalidArgumentException`.
+- `CircuitSnapshotObserver extends CircuitObserver` adds
+  `onSnapshot(string $breakerName, Metrics $metrics)`; it is fed ONLY by an
+  explicit `$cb->publishState()` (reads storage; no-op unless the observer is a
+  snapshot observer; observer errors propagate). Use it to create gauge series
+  before the first transition (call once after wiring, or per scrape).
+- `CircuitOpenException::retryAfterIn(ClockInterface $clock): Duration` — time
+  left until `retryAfter`, never negative, microsecond precision.
+- Depend on `CircuitBreakerInterface` (call, canCall, state, metrics,
+  forceOpen, forceClosed) for decorators/test doubles; `CircuitBreaker`
+  implements it.
 - `Ratio::of(failures, window, within)`: a ring buffer capped at `window`
   entries, pruned to the last `within` duration. Opens when the failure count
   within that buffer reaches `failures`.
@@ -97,6 +109,19 @@ use Rasuvaeff\CircuitBreaker\InMemoryStorage;
 use Rasuvaeff\CircuitBreaker\Ratio;
 use Rasuvaeff\Duration\Duration;
 
+// Short form: successThreshold = 1, clock = SystemClock.
+$cb = new CircuitBreaker(
+    config: BreakerConfig::forRemoteApi(
+        name: 'stripe',
+        failures: 5, window: 10, within: Duration::seconds(60),
+        cooldown: Duration::seconds(30),
+        isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
+        // successThreshold: 1, probeLimit: 1, probeTimeout: null, classifyResult: null
+    ),
+    storage: new InMemoryStorage(),
+);
+
+// Full form.
 $cb = new CircuitBreaker(
     config: new BreakerConfig(
         name: 'stripe',
@@ -107,7 +132,8 @@ $cb = new CircuitBreaker(
         isFailure: static fn(\Throwable $e): bool => $e instanceof ClientExceptionInterface,
     ),
     storage: new InMemoryStorage(), // or ApcuStorage / RedisStorage
-    clock: new SystemClock(),
+    clock: new SystemClock(),       // optional, defaults to SystemClock
+    // observer: CircuitObserver, observerErrorHandler: callable(\Throwable, CircuitTransition): void — both optional
 );
 
 $result = $cb->call(
@@ -120,6 +146,7 @@ $cb->state();     // CircuitState::Closed|Open|HalfOpen
 $cb->metrics();   // Metrics: state(), successes(), failures(), rejected(), openedAt()
 $cb->forceOpen();
 $cb->forceClosed();
+$cb->publishState(); // feeds CircuitSnapshotObserver::onSnapshot(), see Rules
 ```
 
 With Redis (multi-host):
