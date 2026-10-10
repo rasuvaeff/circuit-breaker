@@ -35,7 +35,7 @@ final class CircuitOpenException extends \RuntimeException
     public function retryAfterIn(ClockInterface $clock): Duration
     {
         $now = $clock->now();
-        $micros = ((int) $this->retryAfter->format('U') - (int) $now->format('U')) * 1_000_000
+        $micros = ($this->retryAfter->getTimestamp() - $now->getTimestamp()) * 1_000_000
             + (int) $this->retryAfter->format('u') - (int) $now->format('u');
 
         return Duration::micros(max(0, $micros));
