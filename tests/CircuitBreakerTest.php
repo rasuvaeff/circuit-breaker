@@ -8,12 +8,15 @@ use Rasuvaeff\CircuitBreaker\Admission;
 use Rasuvaeff\CircuitBreaker\AdmissionResult;
 use Rasuvaeff\CircuitBreaker\BreakerConfig;
 use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\CircuitBreakerInterface;
 use Rasuvaeff\CircuitBreaker\CircuitObserver;
 use Rasuvaeff\CircuitBreaker\CircuitOpenException;
+use Rasuvaeff\CircuitBreaker\CircuitSnapshotObserver;
 use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\CircuitTransition;
 use Rasuvaeff\CircuitBreaker\Clock\FakeClock;
 use Rasuvaeff\CircuitBreaker\InMemoryStorage;
+use Rasuvaeff\CircuitBreaker\Metrics;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\OutcomeResult;
 use Rasuvaeff\CircuitBreaker\Ratio;
@@ -179,6 +182,143 @@ final class CircuitBreakerTest
         $cb->forceClosed();
 
         Assert::same($this->transitionsReceivedBy($observer), []);
+    }
+
+    public function implementsTheBreakerInterface(): void
+    {
+        Assert::instanceOf($this->breaker(), CircuitBreakerInterface::class);
+    }
+
+    public function clockDefaultsToTheSystemClock(): void
+    {
+        $cb = new CircuitBreaker(
+            config: BreakerConfig::forRemoteApi(
+                name: 'svc',
+                failures: 1,
+                window: 1,
+                within: Duration::seconds(60),
+                cooldown: Duration::seconds(30),
+                isFailure: static fn(\Throwable $e): bool => true,
+            ),
+            storage: $this->storage,
+        );
+
+        $before = new \DateTimeImmutable();
+        $cb->forceOpen();
+        $after = new \DateTimeImmutable();
+
+        $openedAt = $cb->metrics()->openedAt();
+        Assert::true($openedAt >= $before);
+        Assert::true($openedAt <= $after);
+    }
+
+    public function observerWithoutErrorHandlerDiscardsObserverFailures(): void
+    {
+        $observer = Understudy::for(CircuitObserver::class);
+        when(fn() => $observer->onTransition(Arg::any()))->throws(new \RuntimeException('gauge down'));
+        $cb = $this->breaker(observer: $observer);
+
+        $cb->forceOpen();
+
+        Assert::same($cb->state(), CircuitState::Open);
+    }
+
+    public function errorHandlerWithoutObserverIsRejected(): void
+    {
+        Expect::exception(\InvalidArgumentException::class)
+            ->withMessageContaining('Observer error handler requires an observer');
+
+        $this->breaker(observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {});
+    }
+
+    public function publishStateHandsTheCurrentSnapshotToASnapshotObserver(): void
+    {
+        $observer = Understudy::for(CircuitSnapshotObserver::class);
+        $cb = $this->breaker(failures: 1, window: 1, observer: $observer);
+        $this->callAndSwallow($cb);
+
+        expect(fn() => $observer->onSnapshot(Arg::any(), Arg::any()))->times(1);
+
+        $cb->publishState();
+
+        $calls = Understudy::calls(fn() => $observer->onSnapshot(Arg::any(), Arg::any()));
+        Assert::same($calls[0]->args[0], 'svc');
+        $metrics = $calls[0]->args[1];
+        Assert::instanceOf($metrics, Metrics::class);
+        Assert::same($metrics->state(), CircuitState::Open);
+        Assert::same($metrics->failures(), 1);
+    }
+
+    public function publishStateReportsAClosedBreakerThatNeverTransitioned(): void
+    {
+        $observer = Understudy::for(CircuitSnapshotObserver::class);
+        $cb = $this->breaker(observer: $observer);
+
+        expect(fn() => $observer->onSnapshot(Arg::any(), Arg::any()))->times(1);
+        expect(fn() => $observer->onTransition(Arg::any()))->times(0);
+
+        $cb->publishState();
+
+        $calls = Understudy::calls(fn() => $observer->onSnapshot(Arg::any(), Arg::any()));
+        Assert::same($calls[0]->args[1]->state(), CircuitState::Closed);
+    }
+
+    public function publishStateWithAPlainObserverDoesNotTouchStorage(): void
+    {
+        $storage = Understudy::for(Storage::class);
+        $observer = Understudy::for(CircuitObserver::class);
+        $cb = new CircuitBreaker(
+            config: BreakerConfig::forRemoteApi(
+                name: 'svc',
+                failures: 1,
+                window: 1,
+                within: Duration::seconds(60),
+                cooldown: Duration::seconds(30),
+                isFailure: static fn(\Throwable $e): bool => true,
+            ),
+            storage: $storage,
+            clock: $this->clock,
+            observer: $observer,
+        );
+
+        expect(fn() => $storage->snapshot(Arg::any()))->times(0);
+
+        $cb->publishState();
+    }
+
+    public function publishStateWithoutObserverIsANoOp(): void
+    {
+        $storage = Understudy::for(Storage::class);
+        $cb = new CircuitBreaker(
+            config: BreakerConfig::forRemoteApi(
+                name: 'svc',
+                failures: 1,
+                window: 1,
+                within: Duration::seconds(60),
+                cooldown: Duration::seconds(30),
+                isFailure: static fn(\Throwable $e): bool => true,
+            ),
+            storage: $storage,
+            clock: $this->clock,
+        );
+
+        expect(fn() => $storage->snapshot(Arg::any()))->times(0);
+
+        $cb->publishState();
+    }
+
+    public function publishStatePropagatesObserverFailures(): void
+    {
+        $observer = Understudy::for(CircuitSnapshotObserver::class);
+        when(fn() => $observer->onSnapshot(Arg::any(), Arg::any()))->throws(new \RuntimeException('gauge down'));
+        $cb = $this->breaker(
+            observer: $observer,
+            observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition): void {},
+        );
+
+        Expect::exception(\RuntimeException::class)->withMessageContaining('gauge down');
+
+        $cb->publishState();
     }
 
     public function storageFailureAfterSuccessfulCallbackIsNotRecordedAsDownstreamFailure(): void

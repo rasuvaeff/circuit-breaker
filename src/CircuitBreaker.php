@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\CircuitBreaker;
 
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\CircuitBreaker\Clock\SystemClock;
 
 /**
  * Protects a downstream call behind a `Closed → Open → HalfOpen` state
@@ -12,9 +13,10 @@ use Psr\Clock\ClockInterface;
  *
  * @api
  */
-final class CircuitBreaker
+final class CircuitBreaker implements CircuitBreakerInterface
 {
     private readonly string $attemptPrefix;
+    private readonly ClockInterface $clock;
     private readonly ?CircuitObserver $observer;
 
     /** @var (\Closure(\Throwable, CircuitTransition): void)|null */
@@ -23,18 +25,25 @@ final class CircuitBreaker
     private int $attemptCounter = 0;
 
     /**
+     * @param ClockInterface|null $clock defaults to {@see SystemClock}
      * @param (callable(\Throwable, CircuitTransition): void)|null $observerErrorHandler
+     *        receives an exception thrown by `$observer`; an observer failure
+     *        never affects the protected call. Without a handler such
+     *        exceptions are discarded silently — pass one (e.g. a logger call)
+     *        to see them. A handler without an observer is a configuration
+     *        error.
      */
     public function __construct(
         private readonly BreakerConfig $config,
         private readonly Storage $storage,
-        private readonly ClockInterface $clock,
+        ?ClockInterface $clock = null,
         ?CircuitObserver $observer = null,
         ?callable $observerErrorHandler = null,
     ) {
-        if (($observer === null) !== ($observerErrorHandler === null)) {
-            throw new \InvalidArgumentException('Observer and observer error handler must be configured together');
+        if ($observer === null && $observerErrorHandler !== null) {
+            throw new \InvalidArgumentException('Observer error handler requires an observer');
         }
+        $this->clock = $clock ?? new SystemClock();
         $this->attemptPrefix = bin2hex(random_bytes(16));
         $this->observer = $observer;
         $this->observerErrorHandler = $observerErrorHandler === null
@@ -66,6 +75,7 @@ final class CircuitBreaker
      * @throws \Throwable the original exception, when `$callback` threw and
      *         either it was `Ignored` or it was a `Failure` with no `$fallback`
      */
+    #[\Override]
     public function call(callable $callback, ?callable $fallback = null): mixed
     {
         $key = $this->config->name();
@@ -140,6 +150,7 @@ final class CircuitBreaker
      * this is optimistic; `call()` may still reject it. `Open` reports `true`
      * only once the cooldown has elapsed.
      */
+    #[\Override]
     public function canCall(): bool
     {
         $record = $this->storageOperation(
@@ -160,6 +171,7 @@ final class CircuitBreaker
      * `Open` → `HalfOpen` cooldown transition — that only happens inside
      * `call()`'s `admit()` step.
      */
+    #[\Override]
     public function state(): CircuitState
     {
         return $this->storageOperation(
@@ -168,6 +180,7 @@ final class CircuitBreaker
         )->state();
     }
 
+    #[\Override]
     public function metrics(): Metrics
     {
         return Metrics::fromStateRecord($this->storageOperation(
@@ -180,6 +193,7 @@ final class CircuitBreaker
      * Force an immediate transition to `Open` (e.g. ahead of a planned
      * upstream downtime), resetting all counters.
      */
+    #[\Override]
     public function forceOpen(): void
     {
         $transition = $this->storageOperation(
@@ -197,6 +211,7 @@ final class CircuitBreaker
      * Force an immediate transition to `Closed` (reset), resetting all
      * counters.
      */
+    #[\Override]
     public function forceClosed(): void
     {
         $transition = $this->storageOperation(
@@ -208,6 +223,32 @@ final class CircuitBreaker
             ),
         );
         $this->observe($transition);
+    }
+
+    /**
+     * Read the current state and hand it to the observer, if the observer
+     * implements {@see CircuitSnapshotObserver}; otherwise a no-op that does
+     * not touch storage.
+     *
+     * {@see CircuitObserver::onTransition()} only fires on a state change, so
+     * a gauge fed by it has no series until the first trip. Call this once
+     * after wiring (or on every metrics scrape, which also keeps per-process
+     * gauges of a shared-storage breaker in sync with other workers). Unlike
+     * the constructor it reads storage, so it is deliberately explicit.
+     *
+     * An exception thrown by the observer propagates unchanged — the caller
+     * of this method is the one who decides how to report it.
+     *
+     * @throws StorageFailure when the storage backend fails
+     */
+    public function publishState(): void
+    {
+        $observer = $this->observer;
+        if (!$observer instanceof CircuitSnapshotObserver) {
+            return;
+        }
+
+        $observer->onSnapshot($this->config->name(), $this->metrics());
     }
 
     /**

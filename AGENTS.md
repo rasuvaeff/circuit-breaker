@@ -162,7 +162,12 @@ provides a `redis:7-alpine` service container + `REDIS_HOST`, plus
 - `BreakerConfig::$classifyResult` classifies normal callback returns and
   defaults to `Outcome::Success`; a normal `Failure` updates state but returns
   the original value and never invokes fallback. `CircuitObserver` receives
-  committed `CircuitTransition` events; observer and error handler are a pair.
+  committed `CircuitTransition` events; the error handler is optional (observer
+  errors are discarded without one, never reaching the call), but a handler
+  without an observer is rejected. `CircuitSnapshotObserver` gets the current
+  state only via the explicit `CircuitBreaker::publishState()` — never read
+  storage implicitly in the constructor (DI build time) or on `call()` (an
+  extra Redis round-trip per FPM request).
 - **`snapshot()` takes no `\DateTimeImmutable $now` and applies no
   auto-transition or pruning** — by design (see `Storage::snapshot()`'s
   docblock). A long-idle breaker's `Closed`/`Open` counts can look stale

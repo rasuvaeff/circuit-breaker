@@ -5,8 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.3.0 — 2026-10-10
 
+- Add `CircuitBreakerInterface` (`call`, `canCall`, `state`, `metrics`, `forceOpen`, `forceClosed`), implemented by `CircuitBreaker`, so decorators and test doubles can stand in for the breaker (#31).
+- Add `CircuitSnapshotObserver` (extends `CircuitObserver` with `onSnapshot(string $breakerName, Metrics $metrics)`) and `CircuitBreaker::publishState()`: a metrics gauge can now publish the current state before the first transition instead of a hand-written `prime()` (#28). `publishState()` reads storage and is never called implicitly.
+- `CircuitBreaker`'s `clock` is now optional and defaults to `Clock\SystemClock`; `observerErrorHandler` is optional when an observer is set (observer exceptions are then discarded, still never affecting the call). A handler without an observer is still rejected (#29).
+- Add `BreakerConfig::forRemoteApi(name, failures, window, within, cooldown, isFailure, successThreshold = 1, probeLimit = 1, probeTimeout = null, classifyResult = null)` (#29).
+- Add `CircuitOpenException::retryAfterIn(ClockInterface $clock): Duration`: time left until `retryAfter`, never negative, microsecond precision (#30).
 - Switch the test suite's hand-rolled doubles (anonymous `Storage`/`CircuitObserver`/`CircuitScriptRunner` classes, the predis `ClientInterface` fake, and the `RecordingObserver` support class) to `rasuvaeff/understudy` via the `rasuvaeff/understudy-testo` adapter: every double is now `Understudy::for(...)` with `when()`/`expect()`, verification and reset run automatically after each test. Dev-only; no runtime changes.
 
 ## 1.2.0 — 2026-08-21
