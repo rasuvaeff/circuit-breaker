@@ -122,6 +122,36 @@ use Rasuvaeff\CircuitBreaker\ApcuStorage;
 $storage = new ApcuStorage();
 ```
 
+### Request deadlines and cancellation (`rasuvaeff/context`)
+
+When the callback runs under a [`rasuvaeff/context`](https://github.com/rasuvaeff/context)
+budget, its context exceptions say something about the **caller**, not the
+dependency. Counting them as failures lets one client with a short budget
+open the circuit for everyone. Classify them as ignored:
+
+```php
+use Psr\Http\Client\ClientExceptionInterface;
+use Rasuvaeff\Context\ContextCancelledException;
+use Rasuvaeff\Context\ContextExpiredException;
+
+$config = new BreakerConfig(
+    // ...
+    isFailure: static fn(\Throwable $e): bool => match (true) {
+        $e instanceof ContextCancelledException, // the caller gave up
+        $e instanceof ContextExpiredException => false, // the caller's budget ran out
+        default => $e instanceof ClientExceptionInterface,
+    },
+);
+```
+
+An ignored outcome is rethrown as is, skips `$fallback` and still releases a
+`HalfOpen` probe slot. The trade-off: an expiry cannot tell "our budget was
+short" from "the dependency is slow". If every caller's budget is generous
+and you want a slow dependency to open the circuit, count an expiry whose
+`getPrevious()` is a transport failure (that is how `rasuvaeff/context-http`
+reports a request that timed out against the budget). The breaker has no
+call timeout of its own — the budget is enforced by the transport.
+
 ### Public API
 
 | Type | Description |
