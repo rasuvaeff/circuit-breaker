@@ -123,6 +123,36 @@ use Rasuvaeff\CircuitBreaker\ApcuStorage;
 $storage = new ApcuStorage();
 ```
 
+### Дедлайны и отмена запроса (`rasuvaeff/context`)
+
+Когда callback работает под бюджетом [`rasuvaeff/context`](https://github.com/rasuvaeff/context),
+исключения контекста говорят о **вызывающем**, а не о зависимости. Если
+считать их отказами, один клиент с коротким бюджетом откроет цепь для всех.
+Классифицируйте их как игнорируемые:
+
+```php
+use Psr\Http\Client\ClientExceptionInterface;
+use Rasuvaeff\Context\ContextCancelledException;
+use Rasuvaeff\Context\ContextExpiredException;
+
+$config = new BreakerConfig(
+    // ...
+    isFailure: static fn(\Throwable $e): bool => match (true) {
+        $e instanceof ContextCancelledException, // вызывающий передумал
+        $e instanceof ContextExpiredException => false, // бюджет вызывающего исчерпан
+        default => $e instanceof ClientExceptionInterface,
+    },
+);
+```
+
+Игнорируемый результат пробрасывается как есть, не вызывает `$fallback` и
+всё равно освобождает probe-слот в `HalfOpen`. Компромисс: истечение бюджета
+не отличает «у нас был короткий бюджет» от «зависимость тормозит». Если
+бюджеты всех вызывающих щедрые и медленная зависимость должна открывать цепь,
+считайте отказом истечение, у которого `getPrevious()` — ошибка транспорта
+(так `rasuvaeff/context-http` сообщает о запросе, упёршемся в бюджет).
+Собственного таймаута вызова у breaker нет — бюджет соблюдает транспорт.
+
 ### Публичный API
 
 | Тип | Описание |
