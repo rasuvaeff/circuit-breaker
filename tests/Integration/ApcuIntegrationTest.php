@@ -11,6 +11,7 @@ use Rasuvaeff\CircuitBreaker\CircuitState;
 use Rasuvaeff\CircuitBreaker\CircuitTransition;
 use Rasuvaeff\CircuitBreaker\Outcome;
 use Rasuvaeff\CircuitBreaker\Ratio;
+use Rasuvaeff\CircuitBreaker\Tests\Support\ApcuLockProbe;
 use Rasuvaeff\CircuitBreaker\Tests\Support\ApcuStoreFailure;
 use Rasuvaeff\CircuitBreaker\Tests\Support\StorageCalls;
 use Rasuvaeff\CircuitBreaker\TransitionReason;
@@ -202,6 +203,106 @@ final class ApcuIntegrationTest
 
         Assert::instanceOf($caught, \RuntimeException::class);
         Assert::same($storage->snapshot(self::NAME)->state(), CircuitState::Closed);
+    }
+
+    public function admitThrowsWhenLockCannotBeAcquired(): void
+    {
+        if ($this->storage === null) {
+            return;
+        }
+
+        $prefix = 'circuit-breaker-admit-lock-test:';
+        $storage = new ApcuStorage(keyPrefix: $prefix, lockMaxAttempts: 1, lockRetryMicros: 1);
+        $config = $this->config(failures: 1, window: 1);
+        $now = new \DateTimeImmutable('2025-01-01T00:00:00+00:00');
+        apcu_store($prefix . 'lock:' . self::NAME, 42, 10);
+        $caught = null;
+
+        try {
+            $this->admitOn($storage, self::NAME, $config, $now)->admission();
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        } finally {
+            apcu_delete($prefix . 'lock:' . self::NAME);
+        }
+
+        Assert::instanceOf($caught, \RuntimeException::class);
+        Assert::string($caught->getMessage())->contains('Unable to acquire APCu lock for breaker "' . self::NAME . '"');
+    }
+
+    public function aLockHeldByAnotherOwnerIsRetriedExactlyLockMaxAttemptsTimes(): void
+    {
+        if ($this->storage === null) {
+            return;
+        }
+
+        $prefix = 'circuit-breaker-spin-test:';
+        $storage = new ApcuStorage(keyPrefix: $prefix, lockMaxAttempts: 3, lockRetryMicros: 7);
+        $config = $this->config(failures: 1, window: 1);
+        $now = new \DateTimeImmutable('2025-01-01T00:00:00+00:00');
+        apcu_store($prefix . 'lock:' . self::NAME, 42, 10);
+        ApcuLockProbe::arm();
+
+        try {
+            $this->admitOn($storage, self::NAME, $config, $now)->admission();
+        } catch (\RuntimeException) {
+            // expected - the lock is never released.
+        } finally {
+            $adds = ApcuLockProbe::$adds;
+            $sleepMicros = ApcuLockProbe::$sleepMicros;
+            ApcuLockProbe::reset();
+            apcu_delete($prefix . 'lock:' . self::NAME);
+        }
+
+        Assert::same($adds, 3);
+        Assert::same($sleepMicros, [7, 7, 7]);
+    }
+
+    public function takingOverAReleasedLockRefreshesItsLease(): void
+    {
+        if ($this->storage === null) {
+            return;
+        }
+
+        $prefix = 'circuit-breaker-lease-test:';
+        $storage = new ApcuStorage(keyPrefix: $prefix, lockTtlSeconds: 5);
+        $config = $this->config(failures: 1, window: 1);
+        $now = new \DateTimeImmutable('2025-01-01T00:00:00+00:00');
+        // A released lock keeps its slot with value 0; the next owner takes it
+        // over by CAS and must re-arm the TTL the previous owner left behind.
+        apcu_store($prefix . 'lock:' . self::NAME, 0, 0);
+        ApcuLockProbe::arm();
+
+        try {
+            $this->admitOn($storage, self::NAME, $config, $now)->admission();
+        } finally {
+            $ttl = ApcuLockProbe::$storeTtls[$prefix . 'lock:' . self::NAME] ?? null;
+            ApcuLockProbe::reset();
+            apcu_delete($prefix . 'lock:' . self::NAME);
+        }
+
+        Assert::same($ttl, 5);
+    }
+
+    public function lockTokensStartAtOneBecauseZeroMeansUnlocked(): void
+    {
+        if ($this->storage === null) {
+            return;
+        }
+
+        $config = $this->config(failures: 1, window: 1);
+        $now = new \DateTimeImmutable('2025-01-01T00:00:00+00:00');
+        ApcuLockProbe::arm();
+
+        try {
+            $this->admitOn($this->storage, self::NAME, $config, $now)->admission();
+        } finally {
+            $bounds = ApcuLockProbe::$tokenLowerBounds;
+            ApcuLockProbe::reset();
+        }
+
+        Assert::true($bounds !== []);
+        Assert::same(min($bounds), 1);
     }
 
     public function forceStateReportsAFullyPopulatedTransition(): void

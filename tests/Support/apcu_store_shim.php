@@ -15,13 +15,46 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\CircuitBreaker;
 
+use Rasuvaeff\CircuitBreaker\Tests\Support\ApcuLockProbe;
 use Rasuvaeff\CircuitBreaker\Tests\Support\ApcuStoreFailure;
 
 function apcu_store(mixed $key, mixed $value = null, int $ttl = 0): mixed
 {
+    if (ApcuLockProbe::$armed && is_string($key)) {
+        ApcuLockProbe::$storeTtls[$key] = $ttl;
+    }
+
     if (is_string($key) && ApcuStoreFailure::shouldFail($key)) {
         return false;
     }
 
     return \apcu_store($key, $value, $ttl);
+}
+
+function apcu_add(mixed $key, mixed $value = null, int $ttl = 0): mixed
+{
+    if (ApcuLockProbe::$armed) {
+        ++ApcuLockProbe::$adds;
+    }
+
+    return \apcu_add($key, $value, $ttl);
+}
+
+function usleep(int $microseconds): void
+{
+    if (ApcuLockProbe::$armed) {
+        ++ApcuLockProbe::$sleeps;
+        ApcuLockProbe::$sleepMicros[] = $microseconds;
+    }
+
+    \usleep($microseconds);
+}
+
+function random_int(int $min, int $max): int
+{
+    if (ApcuLockProbe::$armed) {
+        ApcuLockProbe::$tokenLowerBounds[] = $min;
+    }
+
+    return \random_int($min, $max);
 }
