@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Mutation testing now counts uncovered code: `composer mutation` runs `infection --with-uncovered`, and `PublicVisibility` is off in `infection.json5` (its mutants sit on method signature lines and can never be killed under pcov). The overall MSI gate stays at 96. Tests added for the BreakerState entry contract, RedisStorage reply-shape errors and `useServerTime`, PhpRedisScriptRunner error handling, throwing classifiers and observer error handlers in CircuitBreaker, the EVAL fallback in PredisScriptRunner, and the APCu lock spin budget, lease refresh and token bounds. No `src/` changes.
+
 ## 1.3.0 — 2026-10-10
 
 - Add `CircuitBreakerInterface` (`call`, `canCall`, `state`, `metrics`, `forceOpen`, `forceClosed`), implemented by `CircuitBreaker`, so decorators and test doubles can stand in for the breaker (#31).

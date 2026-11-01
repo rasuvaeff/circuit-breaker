@@ -58,6 +58,16 @@ final class PredisScriptRunnerTest
             ['EVAL', ['return 1', 1, 'cb:svc']],
         ]);
     }
+    public function evalFallbackCarriesEveryKeyAndArgument(): void
+    {
+        $client = $this->client(reply: 'allowed', evalshaError: 'NOSCRIPT No matching script. Please use EVAL.');
+        $runner = new PredisScriptRunner($client);
+
+        $runner->run('return 1', ['cb:svc', 'cb:svc:ring'], [1000, 30000]);
+
+        Assert::same($this->executedCommands($client)[1], ['EVAL', ['return 1', 2, 'cb:svc', 'cb:svc:ring', 1000, 30000]]);
+    }
+
     public function rethrowsNonNoscriptServerErrors(): void
     {
         $client = $this->client(reply: 'allowed', evalshaError: 'ERR Error compiling script');

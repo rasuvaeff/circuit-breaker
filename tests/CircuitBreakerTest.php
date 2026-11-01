@@ -793,6 +793,126 @@ final class CircuitBreakerTest
         return ['cooldownSeconds' => Gen::intBetween(1, 3600)];
     }
 
+    public function observerErrorHandlerReceivesTheObserverFailureAndTheTransition(): void
+    {
+        $failure = new \RuntimeException('gauge down');
+        $observer = Understudy::for(CircuitObserver::class);
+        when(fn() => $observer->onTransition(Arg::any()))->throws($failure);
+        $handled = [];
+        $cb = $this->breaker(
+            observer: $observer,
+            observerErrorHandler: static function (\Throwable $e, CircuitTransition $transition) use (&$handled): void {
+                $handled[] = [$e, $transition];
+            },
+        );
+
+        $cb->forceOpen();
+
+        Assert::same(count($handled), 1);
+        Assert::same($handled[0][0], $failure);
+        Assert::same($handled[0][1]->to(), CircuitState::Open);
+    }
+
+    public function throwingFailureClassifierIsRethrownAndTheCallIsNotCountedAgainstTheBreaker(): void
+    {
+        $classifierError = new \LogicException('classifier broke');
+        $cb = $this->breaker(
+            failures: 1,
+            window: 1,
+            isFailure: static function (\Throwable $e) use ($classifierError): never {
+                throw $classifierError;
+            },
+        );
+
+        $caught = null;
+
+        try {
+            $cb->call(static function (): never {
+                throw new \RuntimeException('boom');
+            });
+        } catch (\Throwable $e) {
+            $caught = $e;
+        }
+
+        Assert::same($caught, $classifierError);
+        Assert::same($cb->state(), CircuitState::Closed);
+        Assert::same($cb->metrics()->failures(), 0);
+    }
+
+    public function throwingResultClassifierIsRethrownAndTheCallIsNotCountedAgainstTheBreaker(): void
+    {
+        $classifierError = new \LogicException('result classifier broke');
+        $cb = $this->breaker(
+            failures: 1,
+            window: 1,
+            classifyResult: static function (mixed $result) use ($classifierError): never {
+                throw $classifierError;
+            },
+        );
+
+        $caught = null;
+
+        try {
+            $cb->call(static fn(): string => 'ok');
+        } catch (\Throwable $e) {
+            $caught = $e;
+        }
+
+        Assert::same($caught, $classifierError);
+        Assert::same($cb->state(), CircuitState::Closed);
+        Assert::same($cb->metrics()->failures(), 0);
+    }
+
+    public function probeWhoseFailureClassifierThrowsReleasesItsSlot(): void
+    {
+        $calls = 0;
+        $cb = $this->breaker(
+            isFailure: static function (\Throwable $e) use (&$calls): bool {
+                if (++$calls === 1) {
+                    throw new \LogicException('classifier broke');
+                }
+
+                return true;
+            },
+        );
+        $cb->forceOpen();
+        $this->clock->advanceMs(31_000);
+
+        try {
+            $cb->call(static function (): never {
+                throw new \RuntimeException('boom');
+            });
+        } catch (\LogicException) {
+            // expected - the probe slot must be free again afterwards.
+        }
+
+        Assert::same($cb->call(static fn(): string => 'second probe'), 'second probe');
+    }
+
+    public function probeWhoseResultClassifierThrowsReleasesItsSlot(): void
+    {
+        $calls = 0;
+        $cb = $this->breaker(
+            classifyResult: static function (mixed $result) use (&$calls): Outcome {
+                if (++$calls === 1) {
+                    throw new \LogicException('classifier broke');
+                }
+
+                return Outcome::Success;
+            },
+        );
+        $cb->forceOpen();
+        $this->clock->advanceMs(31_000);
+
+        try {
+            $cb->call(static fn(): string => 'first probe');
+        } catch (\LogicException) {
+            // expected - the probe slot must be free again afterwards.
+        }
+
+        Assert::same($cb->call(static fn(): string => 'second probe'), 'second probe');
+    }
+
     /**
      * @param (callable(\Throwable): bool)|null $isFailure
      * @param (callable(mixed): Outcome)|null $classifyResult
