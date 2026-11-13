@@ -15,7 +15,8 @@ use Psr\Log\LogLevel;
  * a forced open) are errors — the breaker stops (or keeps stopping) passing
  * traffic; entering `HalfOpen` is a warning — recovery is being attempted but
  * not guaranteed; reaching `Closed` (probe succeeded or forced closed) is
- * info.
+ * info, and so is `HalfOpen → HalfOpen` — a probe completed but did not
+ * change the state.
  *
  * Every record carries the breaker name, the previous and new state, the
  * transition reason, the committed counters (`successes`, `failures`,
@@ -34,19 +35,23 @@ final readonly class LoggingCircuitObserver implements CircuitObserver
     public function onTransition(CircuitTransition $transition): void
     {
         $state = $transition->state();
+        $from = $transition->from();
+        $to = $transition->to();
 
         $this->logger->log(
-            level: $this->levelFor($transition->from(), $transition->to()),
-            message: 'Circuit breaker {breaker} transitioned from {from} to {to}',
-            context: [
+            $this->levelFor($from, $to),
+            $from === CircuitState::HalfOpen && $to === CircuitState::HalfOpen
+                ? 'Circuit breaker {breaker} probe did not change state'
+                : 'Circuit breaker {breaker} transitioned from {from} to {to}',
+            [
                 'breaker' => $transition->breakerName(),
-                'from' => $transition->from()->value,
-                'to' => $transition->to()->value,
+                'from' => $from->value,
+                'to' => $to->value,
                 'reason' => $transition->reason()->value,
                 'successes' => $state->successes(),
                 'failures' => $state->failures(),
                 'rejected' => $state->rejected(),
-                'occurred_at' => $transition->occurredAt()->format(\DateTimeInterface::ATOM),
+                'occurred_at' => $transition->occurredAt()->format('Y-m-d\TH:i:s.uP'),
             ],
         );
     }
@@ -61,7 +66,8 @@ final readonly class LoggingCircuitObserver implements CircuitObserver
             [CircuitState::Closed, CircuitState::HalfOpen] => LogLevel::WARNING,
             [CircuitState::HalfOpen, CircuitState::Closed],
             [CircuitState::Open, CircuitState::Closed],
-            [CircuitState::Closed, CircuitState::Closed] => LogLevel::INFO,
+            [CircuitState::Closed, CircuitState::Closed],
+            [CircuitState::HalfOpen, CircuitState::HalfOpen] => LogLevel::INFO,
         };
     }
 }

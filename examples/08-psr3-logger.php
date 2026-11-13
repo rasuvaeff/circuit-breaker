@@ -16,9 +16,10 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 // Any PSR-3 logger works; this one just echoes to stdout.
 final class EchoLogger extends AbstractLogger
 {
-    public function log($level, $message, array $context = []): void
+    #[\Override]
+    public function log($level, string|\Stringable $message, array $context = []): void
     {
-        $interpolated = $message;
+        $interpolated = (string) $message;
         foreach ($context as $key => $value) {
             $interpolated = str_replace('{' . $key . '}', (string) $value, $interpolated);
         }

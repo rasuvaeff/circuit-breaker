@@ -372,9 +372,11 @@ $cb->publishState(); // серия существует с этого момен
 оборачивает любой PSR-3 `LoggerInterface` и отображает каждый зафиксированный
 переход в уровень — `Closed → Open` и `HalfOpen → Open` (неудачный probe,
 повторно открывший breaker) это error, вход в `HalfOpen` — warning, возврат в
-`Closed` — info. Контекст несёт имя breaker'а, состояния `from`/`to`, `reason`,
-счётчики `successes`/`failures`/`rejected` и время перехода, поэтому строке
-лога не нужен дополнительный `snapshot()`.
+`Closed` — info, а `HalfOpen → HalfOpen` (probe завершился, но состояние не
+сменилось) — info со своим сообщением. Контекст несёт имя breaker'а, состояния
+`from`/`to`, `reason`, счётчики `successes`/`failures`/`rejected` и время
+перехода (`Y-m-d\TH:i:s.uP`, микросекунды сохраняются), поэтому строке лога не
+нужен дополнительный `snapshot()`.
 
 ```php
 use Psr\Log\LoggerInterface;

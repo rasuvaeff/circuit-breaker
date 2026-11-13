@@ -364,10 +364,12 @@ $cb->publishState(); // the series exists from now on, even if the breaker never
 For logging, skip the hand-written observer: `LoggingCircuitObserver` wraps any
 PSR-3 `LoggerInterface` and maps each committed transition to a severity —
 `Closed → Open` and `HalfOpen → Open` (a failed probe re-tripping the breaker)
-are errors, entering `HalfOpen` is a warning, reaching `Closed` is info. The
-context array carries the breaker name, `from`/`to` states, `reason`,
-`successes`/`failures`/`rejected` counters, and the transition timestamp, so
-the log line needs no extra `snapshot()` read.
+are errors, entering `HalfOpen` is a warning, reaching `Closed` is info, and
+`HalfOpen → HalfOpen` (a probe completed without changing the state) is info
+with its own message. The context array carries the breaker name, `from`/`to`
+states, `reason`, `successes`/`failures`/`rejected` counters, and the transition
+timestamp (`Y-m-d\TH:i:s.uP`, microseconds preserved), so the log line needs no
+extra `snapshot()` read.
 
 ```php
 use Psr\Log\LoggerInterface;

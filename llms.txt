@@ -36,8 +36,11 @@ Namespace `Rasuvaeff\CircuitBreaker`.
 - `LoggingCircuitObserver implements CircuitObserver` wraps a PSR-3
   `LoggerInterface`: `→ Open` (threshold or failed probe) → error,
   `→ HalfOpen` → warning, `→ Closed` → info. Context keys: `breaker`, `from`,
-  `to`, `reason`, `successes`, `failures`, `rejected`, `occurred_at` (ATOM).
-  Message: `Circuit breaker {breaker} transitioned from {from} to {to}`.
+  `to`, `reason`, `successes`, `failures`, `rejected`, `occurred_at`
+  (`Y-m-d\TH:i:s.uP`, microseconds preserved).
+  Message: `Circuit breaker {breaker} transitioned from {from} to {to}`
+  (`Circuit breaker {breaker} probe did not change state` for `HalfOpen →
+  HalfOpen`, which logs at info).
   `psr/log ^3.0` is a require (interface-only).
 
 ```php

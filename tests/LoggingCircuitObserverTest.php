@@ -24,7 +24,7 @@ final class LoggingCircuitObserverTest
     {
         $logger = new SpyLogger();
         $observer = new LoggingCircuitObserver($logger);
-        $at = new \DateTimeImmutable('@0');
+        $at = new \DateTimeImmutable('@0.123456');
         $state = new StateRecord(CircuitState::Open, $at, 1, 2, 0);
         $transition = new CircuitTransition('payments', CircuitState::Closed, CircuitState::Open, $at, TransitionReason::FailureThresholdReached, $state);
 
@@ -42,7 +42,7 @@ final class LoggingCircuitObserverTest
             'successes' => 1,
             'failures' => 2,
             'rejected' => 0,
-            'occurred_at' => '1970-01-01T00:00:00+00:00',
+            'occurred_at' => '1970-01-01T00:00:00.123456+00:00',
         ]);
     }
 
@@ -60,7 +60,27 @@ final class LoggingCircuitObserverTest
 
         $observer->onTransition(new CircuitTransition('payments', $from, $to, $at, $reason, $state));
 
+        Assert::same(\count($logger->records), 1);
         Assert::same($logger->records[0]['level'], $expectedLevel);
+        Assert::same($logger->records[0]['message'], 'Circuit breaker {breaker} transitioned from {from} to {to}');
+    }
+
+    public function logsHalfOpenToHalfOpenProbeAsInfo(): void
+    {
+        $logger = new SpyLogger();
+        $observer = new LoggingCircuitObserver($logger);
+        $at = new \DateTimeImmutable('@0');
+        $state = new StateRecord(CircuitState::HalfOpen, $at, 1, 0, 0);
+
+        $observer->onTransition(
+            new CircuitTransition('payments', CircuitState::HalfOpen, CircuitState::HalfOpen, $at, TransitionReason::ProbeSucceeded, $state),
+        );
+
+        Assert::same(\count($logger->records), 1);
+        Assert::same($logger->records[0]['level'], LogLevel::INFO);
+        Assert::same($logger->records[0]['message'], 'Circuit breaker {breaker} probe did not change state');
+        Assert::same($logger->records[0]['context']['from'], 'half-open');
+        Assert::same($logger->records[0]['context']['to'], 'half-open');
     }
 
     public static function transitionLevelProvider(): iterable
