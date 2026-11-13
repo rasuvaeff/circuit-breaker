@@ -33,6 +33,20 @@ Namespace `Rasuvaeff\CircuitBreaker`.
   explicit `$cb->publishState()` (reads storage; no-op unless the observer is a
   snapshot observer; observer errors propagate). Use it to create gauge series
   before the first transition (call once after wiring, or per scrape).
+- `LoggingCircuitObserver implements CircuitObserver` wraps a PSR-3
+  `LoggerInterface`: `→ Open` (threshold or failed probe) → error,
+  `→ HalfOpen` → warning, `→ Closed` → info. Context keys: `breaker`, `from`,
+  `to`, `reason`, `successes`, `failures`, `rejected`, `occurred_at` (ATOM).
+  Message: `Circuit breaker {breaker} transitioned from {from} to {to}`.
+  `psr/log ^3.0` is a require (interface-only).
+
+```php
+$cb = new CircuitBreaker(
+    config: $config,
+    storage: $storage,
+    observer: new LoggingCircuitObserver($logger), // any PSR-3 logger
+);
+```
 - `CircuitOpenException::retryAfterIn(ClockInterface $clock): Duration` — time
   left until `retryAfter`, never negative, microsecond precision.
 - Depend on `CircuitBreakerInterface` (call, canCall, state, metrics,

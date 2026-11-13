@@ -177,6 +177,7 @@ $config = new BreakerConfig(
 | `CircuitTransition` | Зафиксированный переход: `breakerName`, `from`, `to`, `occurredAt`, `reason`, `state` |
 | `TransitionReason` | Enum: причина перехода — `FailureThresholdReached`, `CooldownElapsed`, `ProbeSucceeded`, `ProbeFailed`, `ForcedOpen`, `ForcedClosed`, `ForcedHalfOpen` |
 | `CircuitObserver` | Интерфейс получения зафиксированных `CircuitTransition`; error handler необязателен |
+| `LoggingCircuitObserver` | Готовый `CircuitObserver`, зеркалирующий переходы в PSR-3 `LoggerInterface` с уровнем по переходу (`→ Open` error, `→ HalfOpen` warning, `→ Closed` info) и полным контекстом (имя, from/to, причина, счётчики, время) |
 | `CircuitSnapshotObserver` | Расширяет `CircuitObserver` методом `onSnapshot(string $breakerName, Metrics $metrics)`, который вызывает `CircuitBreaker::publishState()` |
 | `CircuitOpenException` | Бросается (или передаётся в `fallback`) при отклонении вызова; несёт `breakerName`, `retryAfter`; `retryAfterIn(ClockInterface): Duration` возвращает оставшееся время |
 | `Clock\SystemClock` | `Psr\Clock\ClockInterface` на системных часах |
@@ -365,6 +366,26 @@ final class OpenGauge implements CircuitSnapshotObserver
 
 $cb = new CircuitBreaker(config: $config, storage: $storage, observer: new OpenGauge());
 $cb->publishState(); // серия существует с этого момента, даже если breaker ни разу не сработает
+```
+
+Для логирования не нужно писать observer руками: `LoggingCircuitObserver`
+оборачивает любой PSR-3 `LoggerInterface` и отображает каждый зафиксированный
+переход в уровень — `Closed → Open` и `HalfOpen → Open` (неудачный probe,
+повторно открывший breaker) это error, вход в `HalfOpen` — warning, возврат в
+`Closed` — info. Контекст несёт имя breaker'а, состояния `from`/`to`, `reason`,
+счётчики `successes`/`failures`/`rejected` и время перехода, поэтому строке
+лога не нужен дополнительный `snapshot()`.
+
+```php
+use Psr\Log\LoggerInterface;
+use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\LoggingCircuitObserver;
+
+$cb = new CircuitBreaker(
+    config: $config,
+    storage: $storage,
+    observer: new LoggingCircuitObserver($logger), // любой PSR-3 логгер
+);
 ```
 
 Чтобы превратить отклонение в заголовок `Retry-After` или задержку повторной
