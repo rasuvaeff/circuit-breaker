@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.4.0 — 2026-11-13
 
 - `LoggingCircuitObserver`: pass PSR-3 `log()` arguments positionally (named arguments break on loggers whose parameter names differ), log `HalfOpen → HalfOpen` at info with the message "Circuit breaker {breaker} probe did not change state" (previously an `UnhandledMatchError`), and format `occurred_at` as `Y-m-d\TH:i:s.uP` so fractional seconds are preserved (#38).
 - Add `LoggingCircuitObserver`, a ready-made `CircuitObserver` mirroring committed transitions into a PSR-3 `LoggerInterface`: `Closed → Open` and `HalfOpen → Open` (failed probe) log as error, entering `HalfOpen` as warning, reaching `Closed` as info; the context carries the breaker name, from/to states, reason, committed counters, and the transition timestamp. `psr/log` (interface-only) added to `require` (#37).
