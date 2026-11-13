@@ -176,6 +176,7 @@ call timeout of its own — the budget is enforced by the transport.
 | `CircuitTransition` | A committed state change: `breakerName`, `from`, `to`, `occurredAt`, `reason`, `state` |
 | `TransitionReason` | Enum: why a transition happened — `FailureThresholdReached`, `CooldownElapsed`, `ProbeSucceeded`, `ProbeFailed`, `ForcedOpen`, `ForcedClosed`, `ForcedHalfOpen` |
 | `CircuitObserver` | Interface receiving committed `CircuitTransition` events; optional error handler |
+| `LoggingCircuitObserver` | Ready-made `CircuitObserver` mirroring transitions into a PSR-3 `LoggerInterface` with severity by transition (`→ Open` error, `→ HalfOpen` warning, `→ Closed` info) and full context (name, from/to, reason, counters, timestamp) |
 | `CircuitSnapshotObserver` | Extends `CircuitObserver` with `onSnapshot(string $breakerName, Metrics $metrics)`, delivered by `CircuitBreaker::publishState()` |
 | `CircuitOpenException` | Thrown (or passed to `fallback`) when a call is rejected; carries `breakerName`, `retryAfter`; `retryAfterIn(ClockInterface): Duration` gives the time left |
 | `Clock\SystemClock` | `Psr\Clock\ClockInterface` using the wall clock |
@@ -358,6 +359,28 @@ final class OpenGauge implements CircuitSnapshotObserver
 
 $cb = new CircuitBreaker(config: $config, storage: $storage, observer: new OpenGauge());
 $cb->publishState(); // the series exists from now on, even if the breaker never trips
+```
+
+For logging, skip the hand-written observer: `LoggingCircuitObserver` wraps any
+PSR-3 `LoggerInterface` and maps each committed transition to a severity —
+`Closed → Open` and `HalfOpen → Open` (a failed probe re-tripping the breaker)
+are errors, entering `HalfOpen` is a warning, reaching `Closed` is info, and
+`HalfOpen → HalfOpen` (a probe completed without changing the state) is info
+with its own message. The context array carries the breaker name, `from`/`to`
+states, `reason`, `successes`/`failures`/`rejected` counters, and the transition
+timestamp (`Y-m-d\TH:i:s.uP`, microseconds preserved), so the log line needs no
+extra `snapshot()` read.
+
+```php
+use Psr\Log\LoggerInterface;
+use Rasuvaeff\CircuitBreaker\CircuitBreaker;
+use Rasuvaeff\CircuitBreaker\LoggingCircuitObserver;
+
+$cb = new CircuitBreaker(
+    config: $config,
+    storage: $storage,
+    observer: new LoggingCircuitObserver($logger), // any PSR-3 logger
+);
 ```
 
 To turn a rejection into a `Retry-After` header or a re-queue delay, use

@@ -16,6 +16,7 @@ php examples/01-in-memory.php
 | `05-prometheus-metrics.php` | Exporting `Metrics` in Prometheus exposition format | no |
 | `06-apcu.php` | Single-host cross-process state via `ApcuStorage` | no (needs `ext-apcu`) |
 | `07-storage-outage.php` | Distinguishing storage outage from downstream failure | no |
+| `08-psr3-logger.php` | Mirroring transitions into any PSR-3 logger via `LoggingCircuitObserver` | no |
 
 `02-redis-cluster.php` self-skips with a message unless `REDIS_HOST` is set:
 
