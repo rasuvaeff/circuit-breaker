@@ -21,7 +21,7 @@
         "source": "https://github.com/rasuvaeff/circuit-breaker"
     },
     "require": {
-        "php": "8.3 - 8.5",
+        "php": "8.3 - 8.6",
         "psr/clock": "^1.0",
         "psr/log": "^3.0",
         "rasuvaeff/duration": "^1.0"
@@ -39,7 +39,7 @@
         "roave/backward-compatibility-check": "^8.0",
         "testo/bridge-infection": "^0.1.6",
         "testo/testo": "^0.10.25",
-        "vimeo/psalm": "^7.0"
+        "vimeo/psalm": "^7.15"
     },
     "suggest": {
         "ext-apcu": "Required to use ApcuStorage for single-host distributed state",

@@ -18,7 +18,7 @@ Namespace `Rasuvaeff\CircuitBreaker`.
 
 ## Rules
 
-- PHP 8.3+, `declare(strict_types=1)`, immutable `final readonly` classes.
+- PHP 8.3 – 8.6, `declare(strict_types=1)`, immutable `final readonly` classes.
 - `isFailure` is required in `BreakerConfig`; classify only exceptions that
   indicate a downstream failure (network errors, 5xx status).
 - `classifyResult` is optional and defaults to `Outcome::Success`. Use it for

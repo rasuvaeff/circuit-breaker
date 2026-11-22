@@ -26,7 +26,7 @@ backend'а никогда не меняет поведение, только т�
 
 ## Требования
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - [`rasuvaeff/duration`](https://github.com/rasuvaeff/duration) для типизированных значений cooldown/window
 - `psr/clock` — инъекция любого `ClockInterface`; в комплекте `Clock\SystemClock`
   (production) и `Clock\FakeClock` (тесты)
