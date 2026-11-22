@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- **Changed:** dev tooling: `vimeo/psalm` floor raised `^7.0` → `^7.15`: psalm 7.15 introduced the `WeakHash` check and its issueHandlers schema entry, and the Redis `EVALSHA` script digests need a scoped suppression that older psalm versions cannot parse.
+- **Changed:** PHP 8.6 is supported: the `php` constraint is widened to
+  `8.3 - 8.6` (#40). CI runs PHP 8.6 as a regular matrix entry; the
+  backward-compatibility job runs on PHP 8.5.
+- **Fixed:** psalm 7.15's WeakHash security check flags the `sha1()` digests
+  the Redis `EVALSHA` protocol mandates; the check is now suppressed for the
+  two Redis script runners in `psalm.xml` (#40). The digest never covers user
+  data — Redis matches loaded scripts by SHA1, so there is no stronger
+  algorithm to switch to.
+
 ## 1.4.0 — 2026-11-13
 
 - `LoggingCircuitObserver`: pass PSR-3 `log()` arguments positionally (named arguments break on loggers whose parameter names differ), log `HalfOpen → HalfOpen` at info with the message "Circuit breaker {breaker} probe did not change state" (previously an `UnhandledMatchError`), and format `occurred_at` as `Y-m-d\TH:i:s.uP` so fractional seconds are preserved (#38).

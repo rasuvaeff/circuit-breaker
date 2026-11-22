@@ -25,7 +25,7 @@ changes behavior, only how far the shared state reaches.
 
 ## Requirements
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - [`rasuvaeff/duration`](https://github.com/rasuvaeff/duration) for the typed cooldown/window values
 - `psr/clock` — inject any `ClockInterface`; `Clock\SystemClock` (production) and
   `Clock\FakeClock` (tests) are included
