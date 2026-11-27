@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 use Rasuvaeff\RectorNamedLiterals\AddNameToLiteralArgumentRector;
-use Rector\CodeQuality\Rector\Identical\FlipTypeControlToUseExclusiveTypeRector;
 use Rector\CodeQuality\Rector\Identical\SimplifyBoolIdenticalTrueRector;
+use Rector\CodeQuality\Rector\If_\ExplicitNullableObjectInstanceRector;
 use Rector\Config\RectorConfig;
 use Rector\DeadCode\Rector\ClassMethod\RemoveEmptyClassMethodRector;
 use Rector\DeadCode\Rector\ClassMethod\RemoveUnusedPrivateMethodRector;
@@ -24,6 +24,9 @@ return RectorConfig::configure()
     // ReflectionMethod), so the dead-code rules would strip fixtures Rector
     // cannot see call sites for. Exempt those rules on the test tree.
     ->withSkip([
+        // `$x === null` reads clearer than `!$x instanceof Some\Long\ClassName`
+        // when the declared type already names the class.
+        ExplicitNullableObjectInstanceRector::class,
         RemoveUnusedPrivateMethodRector::class => [__DIR__ . '/tests'],
         RemoveEmptyClassMethodRector::class => [__DIR__ . '/tests'],
         RemoveUnusedPublicMethodParameterRector::class => [__DIR__ . '/tests'],
@@ -35,7 +38,4 @@ return RectorConfig::configure()
         // fork-stress-verified compare-and-set, and a truthy check would hide
         // a swapped success/failure branch.
         SimplifyBoolIdenticalTrueRector::class => [__DIR__ . '/src/ApcuStorage.php'],
-        // `$x === null` reads clearer than `!$x instanceof FQCN` in guards;
-        // keep the null comparison.
-        FlipTypeControlToUseExclusiveTypeRector::class,
     ]);

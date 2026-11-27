@@ -231,7 +231,8 @@ call timeout of its own — the budget is enforced by the transport.
   latency, or pair this package with `rasuvaeff/bulkhead` if you need a hard
   cap on concurrent downstream calls regardless of lease timing.
 - **`isFailure`** — required classifier. Filter to exceptions that actually
-  indicate the *downstream* is unhealthy (network errors, 5xx responses).
+  indicate the *downstream* is unhealthy (network errors, 5xx responses) — see
+  [Caveats](#caveats).
 
 ### How the state holds across workers/hosts
 
